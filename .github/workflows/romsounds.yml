@@ -109,15 +109,10 @@ jobs:
         env:
           MSG: ${{ github.event.head_commit.message }}
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: romsounds-fwsc
-          path: fm1/build/romsounds.fwsc
-          if-no-files-found: error
-
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
+          retention-days: 1
 
   pages:
     needs: firmware
