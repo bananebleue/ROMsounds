@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROMsounds · firmwares du FM-1</title>
+<meta name="theme-color" content="#14161a">
+<style>
+  :root { --bg:#14161a; --panel:#1e2127; --line:#2e323a; --text:#e9e6df; --dim:#9aa0aa; --acc:#ffa500; --ok:#6fcf8f; --bad:#ff6b57; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { font-size:1.6rem; margin:0 0 2px; letter-spacing:.02em; }
+  h1 span { color:var(--acc); }
+  h2 { font-size:1.05rem; margin:0 0 10px; color:var(--acc); font-weight:600; }
+  .sub { color:var(--dim); margin:0 0 20px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin:0 0 14px; }
+  .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .grow { flex:1 1 220px; min-width:0; }
+  button { font:inherit; border:0; border-radius:8px; padding:10px 14px; background:var(--acc); color:#1a1205; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--text); border:1px solid var(--line); font-weight:500; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .state { display:inline-flex; align-items:center; gap:8px; font-weight:600; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--dim); }
+  .dot.on { background:var(--ok); } .dot.busy { background:var(--acc); }
+  .fw { border-top:1px solid var(--line); padding:12px 0; }
+  .fw:first-of-type { border-top:0; padding-top:0; }
+  .fw b { display:block; } .fw small { color:var(--dim); display:block; word-break:break-word; }
+  .tag { font-size:.75rem; color:var(--acc); border:1px solid var(--acc); border-radius:99px; padding:1px 8px; margin-left:6px; font-weight:500; }
+  label.ok { display:flex; gap:10px; align-items:flex-start; color:var(--dim); margin-top:4px; }
+  label.ok input { margin-top:4px; }
+  input[type=file] { color:var(--dim); max-width:100%; }
+  pre { white-space:pre-wrap; background:#0e1013; border:1px solid var(--line); border-radius:8px; padding:12px; margin:12px 0 0; min-height:3em; font:13px/1.45 ui-monospace, Consolas, monospace; color:var(--text); }
+  progress { width:100%; height:10px; margin-top:10px; accent-color:var(--acc); }
+  a { color:var(--acc); }
+  ol { margin:6px 0 10px 20px; padding:0; color:var(--dim); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span>ROM</span>sounds</h1>
+  <p class="sub">Changer le firmware du M-VAVE FM-1 depuis le téléphone ou l’ordinateur (Chrome ou Edge, câble USB).</p>
+
+  <section>
+    <h2>FM-1</h2>
+    <div class="row">
+      <span class="state grow"><span class="dot" id="dot"></span><span id="state">Non détecté</span></span>
+      <button class="ghost" id="detect">Détecter le FM-1</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Installer un firmware</h2>
+    <div id="catalog"></div>
+    <div class="fw">
+      <b>Un fichier .fwsc de l’appareil</b>
+      <small>Firmware Felucca, Dinghy ou dérivé, ou firmware officiel M-VAVE non modifié (V15, V16).</small>
+      <div class="row" style="margin-top:8px">
+        <input type="file" id="file" accept=".fwsc" class="grow">
+        <button id="fileInstall" disabled>Installer</button>
+      </div>
+    </div>
+    <div class="fw">
+      <b>Revenir au firmware officiel</b>
+      <ol>
+        <li><a href="https://yms-file-store.oss-cn-hongkong.aliyuncs.com/software/firmware/FM-1.fwsc" rel="noopener">Télécharger FM-1.fwsc chez M-VAVE</a> (toujours la dernière version).</li>
+        <li>Le choisir ci-dessus, dans « Un fichier .fwsc de l’appareil », puis Installer.</li>
+      </ol>
+    </div>
+    <label class="ok"><input type="checkbox" id="okBox"> <span>J’ai compris : l’installation remplace le firmware en place et efface ce qu’il a enregistré. Ne rien débrancher pendant l’écriture.</span></label>
+    <progress id="bar" max="100" value="0" hidden></progress>
+    <pre id="log">Prêt.</pre>
+  </section>
+</main>
+
+<script src="fm1ota.js"></script>
+<script>
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+
+/* Firmwares proposés. latest.json : { file, product, size, sha256, commit, date, message } */
+const CATALOG = [
+  { key: 'romsounds', name: 'ROMsounds', note: 'firmware de test (base Dinghy 0.5)', base: './' },
+  { key: 'sonar', name: 'Spring’s Sonar', note: 'dépôt public CDT-Ambiance', base: 'https://raw.githubusercontent.com/bananebleue/CDT-Ambiance/fm1-builds/' }
+];
+// Firmwares officiels de M-VAVE acceptés, à l'octet près (SHA-256 de FM-1.fwsc)
+const OFFICIAL = {
+  'd017fb65e70aca97ee29d944470c3515a74581df5c0576bf70de917c7b2b61d5': { v: 'V16', product: 'FM-1_016' },
+  'db1642b2b6fa5c2cccb11ffd13878068bb28601678d3644049f99dc40e7edb8a': { v: 'V15', product: 'FM-1_015' }
+};
+const NAMES = [
+  [/^FM-1_95\d$/, 'ROMsounds'], [/^FM-1_96\d$/, 'Spring’s Sonar'], [/^FM-1_99\d$/, 'Dinghy'],
+  [/^FM-1_91\d$/, 'Felucca'], [/^FM-1_900$/, 'SLOOP'], [/^FM-1_93\d$/, 'sloopDX'], [/^FM-1_0\d\d$/, 'firmware officiel M-VAVE']
+];
+const nameOf = id => { for (const [re, n] of NAMES) if (re.test(id)) return n; return 'firmware inconnu'; };
+const label = id => id + ' · ' + nameOf(id);
+
+const log = $('log'), bar = $('bar'), okBox = $('okBox'), file = $('file');
+let busy = false, access = null, filePkg = null;
+const write = t => { log.textContent = t; };
+const kb = n => Math.round(n / 1024) + ' Ko';
+const hex = async raw => [...new Uint8Array(await crypto.subtle.digest('SHA-256', raw))].map(x => x.toString(16).padStart(2, '0')).join('');
+const when = iso => { try { return new Date(iso).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch (e) { return iso; } };
+
+function setState(text, cls) { $('state').textContent = text; $('dot').className = 'dot' + (cls ? ' ' + cls : ''); }
+
+async function describe(raw, name) {
+  let product, image, what, how = 'Paquet vérifié (en-tête, liste et contrôles CRC).';
+  try {
+    ({ product, image } = FM1OTA.loadPackage(raw));
+    what = nameOf(product);
+  } catch (e) {
+    const off = e instanceof FM1OTA.InstallError && e.code === 'badpkg' && crypto.subtle ? OFFICIAL[await hex(raw)] : null;
+    if (!off) {
+      let id = ''; try { id = FM1OTA.productOf(raw); } catch (x) { /* illisible */ }
+      if (/^FM-1_0\d\d$/.test(id)) throw new FM1OTA.InstallError('badpkg', 'ce fichier se présente comme le firmware officiel ' + id + ', mais ce n’est pas une version connue (V15, V16) à l’octet près : retélécharge-le chez M-VAVE.');
+      throw e;
+    }
+    ({ product, image } = FM1OTA.loadPackage(raw, true));
+    if (product !== off.product) throw new FM1OTA.InstallError('badpkg', 'identité inattendue (' + product + ').');
+    what = 'firmware officiel M-VAVE ' + off.v;
+    how = 'Fichier officiel non modifié (empreinte SHA-256 vérifiée).';
+  }
+  return { pkg: { product, image }, text: 'Fichier : ' + name + ' (' + kb(raw.length) + ')\nIdentité : ' + product + ' — ' + what + '\n' + how };
+}
+
+async function midi() {
+  if (!navigator.requestMIDIAccess) throw new FM1OTA.InstallError('nomidi', 'Web MIDI n’est pas disponible dans ce navigateur : utilise Chrome ou Edge.');
+  if (!access) {
+    try { access = await navigator.requestMIDIAccess({ sysex: true }); }
+    catch (e) { throw new FM1OTA.InstallError('denied', 'Accès MIDI refusé : autorise l’accès aux appareils MIDI pour cette page.'); }
+    access.addEventListener('statechange', () => { if (!busy) { clearTimeout(midi.t); midi.t = setTimeout(detect, 900); } });
+  }
+  return access;
+}
+
+async function detect() {
+  if (busy) return;
+  try {
+    const up = new FM1OTA.Updater(await midi());
+    setState('Recherche…', 'busy');
+    const dev = await up.find();
+    if (!dev) { setState('Non détecté (ports vus : ' + ([...access.inputs.values()].map(p => p.name).join(', ') || 'aucun') + ')'); return; }
+    dev.link.close();
+    setState(dev.id.loader ? 'En mode mise à jour (' + dev.id.text + ') : relance l’installation pour la terminer' : label(dev.id.text), 'on');
+  } catch (e) { setState(e.message || String(e)); }
+}
+
+const guard = e => { e.preventDefault(); e.returnValue = ''; };
+function ready() {
+  document.querySelectorAll('[data-fw]').forEach(b => { b.disabled = busy || !okBox.checked || !b.dataset.ready; });
+  $('fileInstall').disabled = busy || !okBox.checked || !filePkg;
+  file.disabled = busy; $('detect').disabled = busy;
+}
+
+async function install(getPkg) {
+  if (busy) return;
+  let acc;
+  try { acc = await midi(); } catch (e) { write(e.message); return; }
+  busy = true; ready(); bar.hidden = true; bar.value = 0;
+  let lock = null;
+  try { if ('wakeLock' in navigator) lock = await navigator.wakeLock.request('screen'); } catch (e) { /* facultatif */ }
+  window.addEventListener('beforeunload', guard);
+  let head = '';
+  const t0 = Date.now();
+  try {
+    const p = await getPkg(write);
+    head = p.text + '\n\n';
+    write(head + 'Recherche du FM-1…');
+    const up = new FM1OTA.Updater(acc);
+    const dev = await up.find();
+    if (!dev) throw new FM1OTA.InstallError('notfound', 'FM-1 introuvable. Vérifie le câble (données), que le FM-1 est allumé et qu’aucun autre logiciel ne l’utilise.\nPorts MIDI vus : ' + ([...acc.inputs.values()].map(q => q.name).join(', ') || 'aucun'));
+    if (!window.confirm('Installer ' + label(p.pkg.product) + '\nà la place de ' + label(dev.id.text) + ' ?\n\nCe que le firmware en place a enregistré sera effacé. Ne débranche rien pendant l’écriture.')) {
+      dev.link.close(); write(head + 'Installation annulée.'); return;
+    }
+    const lines = ['Avant : ' + label(dev.id.text) + ' (port « ' + dev.name + ' »)' + (dev.id.loader ? '\nLe FM-1 était resté en mode mise à jour : on termine l’écriture.' : '')];
+    const show = extra => write(head + lines.join('\n') + (extra ? '\n' + extra : ''));
+    await up.install(dev, p.pkg.image, p.pkg.product, (k, a) => {
+      if (k === 'start') { lines.push('1/3 Vérification du paquet par le firmware en place…'); show(); }
+      else if (k === 'check') show('lectures : ' + a);
+      else if (k === 'loader') { lines.push('Passage en mode mise à jour (le port USB change de nom)…'); show(); }
+      else if (k === 'write') { if (bar.hidden) { lines.push('2/3 Écriture — ne débranche rien.'); bar.hidden = false; } bar.value = a; show('écriture : ' + a + ' %'); }
+      else if (k === 'reboot') { lines.push('3/3 Redémarrage du FM-1…'); show(); }
+      else if (k === 'done') { lines.push('Terminé : le FM-1 répond ' + label(a) + ' (' + Math.round((Date.now() - t0) / 1000) + ' s).'); show(); }
+    });
+  } catch (e) {
+    const msg = e instanceof FM1OTA.InstallError ? e.message : 'erreur inattendue (' + (e && e.message ? e.message : e) + ')';
+    write(log.textContent + '\n\nÉchec : ' + msg + '\nSi le FM-1 ne démarre plus : maintiens OCT− en l’allumant (secours USB des firmwares Felucca et Dinghy), puis réinstalle.');
+  } finally {
+    window.removeEventListener('beforeunload', guard);
+    if (lock) lock.release().catch(() => {});
+    busy = false; ready();
+    setTimeout(detect, 1500);
+  }
+}
+
+function fromCatalog(fw) {
+  return async say => {
+    const j = fw.latest;
+    say('Téléchargement de ' + fw.name + ' (' + j.commit + ')…');
+    const r = await fetch(fw.base + j.file + '?c=' + j.commit, { cache: 'no-store' });
+    if (!r.ok) throw new FM1OTA.InstallError('download', 'téléchargement impossible (HTTP ' + r.status + ').');
+    const raw = new Uint8Array(await r.arrayBuffer());
+    if (raw.length !== j.size) throw new FM1OTA.InstallError('download', 'fichier incomplet (' + raw.length + ' octets sur ' + j.size + ') : réessaie dans quelques minutes.');
+    if (crypto.subtle && (await hex(raw)) !== j.sha256) throw new FM1OTA.InstallError('download', 'empreinte SHA-256 différente : une nouvelle version est peut-être en cours de publication, recharge la page.');
+    return describe(raw, j.file + ' (' + j.commit + ')');
+  };
+}
+
+for (const fw of CATALOG) {
+  const div = document.createElement('div');
+  div.className = 'fw';
+  div.innerHTML = '<div class="row"><div class="grow"><b></b><small class="info">Recherche de la dernière version…</small></div><button data-fw disabled>Installer</button></div>';
+  div.querySelector('b').textContent = fw.name;
+  const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = fw.note; div.querySelector('b').append(tag);
+  const btn = div.querySelector('button'), info = div.querySelector('.info');
+  btn.addEventListener('click', () => { if (fw.latest) install(fromCatalog(fw)); });
+  $('catalog').append(div);
+  fetch(fw.base + 'latest.json?t=' + Date.now(), { cache: 'no-store' })
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(j => { fw.latest = j; info.textContent = j.product + ' · ' + j.commit + ' du ' + when(j.date) + (j.message ? ' · ' + j.message : ''); btn.dataset.ready = '1'; ready(); })
+    .catch(e => { info.textContent = 'Indisponible (' + e.message + ').'; });
+}
+
+file.addEventListener('change', async () => {
+  filePkg = null; bar.hidden = true;
+  const f = file.files && file.files[0];
+  if (!f) { write('Aucun fichier choisi.'); ready(); return; }
+  try { const d = await describe(new Uint8Array(await f.arrayBuffer()), f.name); filePkg = d; write(d.text); }
+  catch (e) { write('Fichier refusé : ' + (e instanceof FM1OTA.InstallError ? e.message : 'illisible (' + e + ')')); }
+  ready();
+});
+$('fileInstall').addEventListener('click', () => { if (filePkg) install(async () => filePkg); });
+okBox.addEventListener('change', ready);
+$('detect').addEventListener('click', detect);
+
+// Détection automatique si l'accès MIDI (SysEx) est déjà autorisé
+(async () => {
+  try { if ((await navigator.permissions.query({ name: 'midi', sysex: true })).state === 'granted') detect(); } catch (e) { /* pas d'API permissions */ }
+})();
+ready();
+})();
+</script>
+</body>
+</html>

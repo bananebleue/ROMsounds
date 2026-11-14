@@ -1,0 +1,134 @@
+# ROMsounds : compiler le firmware du M-VAVE FM-1 (base Dinghy 0.5), lancer les bancs d'essai sans matériel, vérifier
+# le changement de firmware (officiel V16, Spring's Sonar, dans les deux sens), puis publier la page d'installation et
+# le dernier paquet sur GitHub Pages. Chaîne JieLi : pkgman.jieliapp.com (tools/get_toolchain.sh) ; SDK AC79 : gitee.com.
+name: romsounds
+
+on:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+
+concurrency:
+  group: romsounds-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: fm1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Paquets pour les outils de compilation de Dinghy
+        run: python3 -m pip install Pillow
+
+      - name: Installateur web contre un FM-1 simulé (Node)
+        working-directory: .
+        run: node tests/fm1ota_test.js
+
+      - name: Chaîne JieLi (pkgman.jieliapp.com)
+        run: sh tools/get_toolchain.sh
+
+      - name: SDK JieLi AC79 (trois de ses fichiers vont dans le paquet)
+        run: |
+          for i in 1 2 3; do
+            git clone --depth 1 --branch AC79NN_SDK_V1.2.1_2023-12-13 \
+                https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK.git ~/fw-AC79_AIoT_SDK && break
+            rm -rf ~/fw-AC79_AIoT_SDK
+            sleep 20
+          done
+          test -d ~/fw-AC79_AIoT_SDK
+
+      - name: Compiler (SMK-37 d'abord, FM-1 en dernier, comme l'attendent les tests de Dinghy)
+        run: |
+          BOARD=smk37 sh build.sh
+          BOARD=smk37 MODEL=elite sh build.sh
+          BOARD=smk37 MODEL=mke sh build.sh
+          sh build.sh
+          ls -l build/*.fwsc
+
+      - name: Bancs d'essai de Dinghy (sans matériel)
+        run: sh tests/run_tests.sh
+
+      - name: Changer de firmware (ota.c) - officiel V16, Spring's Sonar, dans les deux sens
+        run: |
+          mkdir -p build/tests
+          cc -O2 -w -o build/tests/ota_test tests/ota_test.c
+          rs=build/romsounds.fwsc
+          echo "=== ROMsounds par-dessus ROMsounds"
+          build/tests/ota_test "$rs"
+          # Spring's Sonar : dépôt public CDT-Ambiance. Son ota.c doit être celui-ci, à l'octet près : alors le test
+          # « ROMsounds par-dessus Spring's Sonar » (ota.c du sonar) est aussi celui de ce dépôt.
+          base=https://raw.githubusercontent.com/bananebleue/CDT-Ambiance
+          if curl -sSf -m 60 -o "$RUNNER_TEMP/sonar.fwsc" "$base/fm1-builds/spring-sonar.fwsc" &&
+             curl -sSf -m 60 -o "$RUNNER_TEMP/sonar_ota.c" "$base/firmware/fm1/firmware/src/ota.c"; then
+            if cmp -s "$RUNNER_TEMP/sonar_ota.c" firmware/src/ota.c; then echo "ota.c identique à celui de Spring's Sonar"
+            else echo "::warning::ota.c diffère de celui de Spring's Sonar : le sens Sonar -> ROMsounds n'est pas couvert"; fi
+            echo "=== Spring's Sonar par-dessus ROMsounds"
+            build/tests/ota_test "$RUNNER_TEMP/sonar.fwsc" "$rs"
+            echo "=== ROMsounds par-dessus Spring's Sonar"
+            build/tests/ota_test "$rs" "$RUNNER_TEMP/sonar.fwsc"
+          else
+            echo "::warning::Spring's Sonar injoignable : tests de changement sautés"
+          fi
+          # FM-1.fwsc de M-VAVE : téléchargé pour ce test seulement, jamais publié ni gardé en artefact
+          if curl -sSf -m 120 -o "$RUNNER_TEMP/FM-1.fwsc" https://yms-file-store.oss-cn-hongkong.aliyuncs.com/software/firmware/FM-1.fwsc; then
+            sha256sum "$RUNNER_TEMP/FM-1.fwsc"
+            echo "=== firmware officiel par-dessus ROMsounds"
+            build/tests/ota_test "$RUNNER_TEMP/FM-1.fwsc" "$rs"
+            rm -f "$RUNNER_TEMP/FM-1.fwsc"
+          else
+            echo "::warning::FM-1.fwsc de M-VAVE injoignable : test du retour officiel sauté"
+          fi
+
+      - name: Site (page d'installation + dernier paquet)
+        run: |
+          site="$GITHUB_WORKSPACE/site"
+          mkdir -p "$site"
+          cp ../web/* "$site/"
+          cp build/romsounds.fwsc "$site/romsounds.fwsc"
+          size=$(stat -c %s "$site/romsounds.fwsc")
+          sha=$(sha256sum "$site/romsounds.fwsc" | cut -d' ' -f1)
+          jq -n --arg file romsounds.fwsc --arg product FM-1_950 --argjson size "$size" --arg sha256 "$sha" \
+                --arg commit "${GITHUB_SHA::7}" --arg ref "$GITHUB_REF_NAME" \
+                --arg message "$(printf '%s' "$MSG" | head -n1 | cut -c1-120)" \
+                --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+                '{file:$file, product:$product, size:$size, sha256:$sha256, commit:$commit, ref:$ref, message:$message, date:$date, run:$run}' \
+                > "$site/latest.json"
+          cat "$site/latest.json"
+          touch "$site/.nojekyll"
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: romsounds-fwsc
+          path: fm1/build/romsounds.fwsc
+          if-no-files-found: error
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  pages:
+    needs: firmware
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
