@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* SPDX-License-Identifier: GPL-3.0-only
  * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
 /* Host test of firmware/src/ota.c: a fake M-UPGRADE serves a real .fwsc over
@@ -224,8 +225,10 @@ int main(int argc, char **argv)
     rc = ota_session();
     printf("  %u requests\n", requests);
     bad += check("session commits", rc == 0 && committed);
-    if (dev_logical)                                      /* another writer: the package's boot area is checked */
+    if (dev_logical && !memmem(raw, n, "FELUCCA-LOADER-1", 16))   /* another writer: the package's boot area is checked */
         bad += check("headers + boot area + loader + confirm", requests > 30 && requests <= 120);
+    else if (dev_logical)                                 /* ROMsounds : un autre firmware Felucca/Dinghy, son propre chargeur */
+        bad += check("same-family package: app area only", requests <= 30);
     else
         bad += check("headers + loader + confirm, no head reads", requests >= 10 && requests <= 30);
     {
