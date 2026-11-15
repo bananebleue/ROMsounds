@@ -18,11 +18,12 @@ lecteur.
 
 ## Publication
 
+Page : https://bananebleue.github.io/ROMsounds/ (domaine prévu : https://romsounds.bananebleue.com, ticket Clodio #7).
+
 À chaque envoi sur `main`, GitHub Actions compile le firmware et publie sur GitHub Pages la page, `romsounds.fwsc`
 et `latest.json` (taille, SHA-256, commit). La page se trouve à l'adresse indiquée dans Settings → Pages.
 
-Prérequis : Settings → Pages → Source : **GitHub Actions**. Pour un dépôt privé, GitHub Pages demande un compte
-GitHub Pro, et le site publié reste public.
+Prérequis : Settings → Pages → Source : **GitHub Actions** (fait). Le dépôt est public : Pages sur un dépôt privé demande GitHub Pro.
 
 ## Pièges connus
 
