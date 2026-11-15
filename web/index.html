@@ -33,6 +33,7 @@
   pre { white-space:pre-wrap; background:#0e1013; border:1px solid var(--line); border-radius:8px; padding:12px; margin:12px 0 0; min-height:3em; font:13px/1.45 ui-monospace, Consolas, monospace; color:var(--text); }
   progress { width:100%; height:10px; margin-top:10px; accent-color:var(--acc); }
   a { color:var(--acc); }
+  .hint { color:var(--acc); margin:0 0 10px; font-size:.9rem; }
   ol { margin:6px 0 10px 20px; padding:0; color:var(--dim); }
 </style>
 </head>
@@ -51,6 +52,8 @@
 
   <section>
     <h2>Installer un firmware</h2>
+    <label class="ok" style="margin:0 0 12px"><input type="checkbox" id="okBox"> <span>J’ai compris : l’installation remplace le firmware en place et efface ce qu’il a enregistré. Ne rien débrancher pendant l’écriture.</span></label>
+    <p class="hint" id="hint">Coche la case ci-dessus pour activer les boutons « Installer ».</p>
     <div id="catalog"></div>
     <div class="fw">
       <b>Un fichier .fwsc de l’appareil</b>
@@ -67,7 +70,6 @@
         <li>Le choisir ci-dessus, dans « Un fichier .fwsc de l’appareil », puis Installer.</li>
       </ol>
     </div>
-    <label class="ok"><input type="checkbox" id="okBox"> <span>J’ai compris : l’installation remplace le firmware en place et efface ce qu’il a enregistré. Ne rien débrancher pendant l’écriture.</span></label>
     <progress id="bar" max="100" value="0" hidden></progress>
     <pre id="log">Prêt.</pre>
   </section>
@@ -170,6 +172,7 @@ function ready() {
   document.querySelectorAll('[data-fw]').forEach(b => { b.disabled = busy || !okBox.checked || !b.dataset.ready; });
   $('fileInstall').disabled = busy || !okBox.checked || !filePkg;
   file.disabled = busy; $('detect').disabled = busy;
+  $('hint').hidden = okBox.checked;
 }
 
 async function install(getPkg) {
