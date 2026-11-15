@@ -230,7 +230,7 @@ static int ota_memeq(const uint8_t *a, const uint8_t *b, uint32_t n)
     return 1;
 }
 
-/* Spring's Sonar : ota_boot_valid et la règle de l'étape 2 viennent de felucca-bsp (chip/ota.c, 9670b5d, MPL-2.0,
+/* ota_boot_valid et la règle de l'étape 2 viennent de felucca-bsp (chip/ota.c, 9670b5d, MPL-2.0,
  * (C) 2026 Leo Kuroshita, Hügelton Instruments ; #274). L'ancienne règle n'acceptait le programme de mise à jour de
  * M-VAVE que si la zone de démarrage du paquet était celle déjà en flash : la V16 (FM-1_016) était refusée.
  *
