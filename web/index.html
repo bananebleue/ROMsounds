@@ -129,21 +129,40 @@ async function midi() {
   if (!access) {
     try { access = await navigator.requestMIDIAccess({ sysex: true }); }
     catch (e) { throw new FM1OTA.InstallError('denied', 'Accès MIDI refusé : autorise l’accès aux appareils MIDI pour cette page.'); }
-    access.addEventListener('statechange', () => { if (!busy) { clearTimeout(midi.t); midi.t = setTimeout(detect, 900); } });
+    // statechange arrive aussi quand la page ouvre ou ferme un port (connection open/closed) : ne relancer la
+    // détection que si la liste des ports branchés change, sinon chaque détection en déclenche une autre.
+    portsKey = plugged();
+    access.addEventListener('statechange', () => {
+      const k = plugged();
+      if (k === portsKey) return;
+      portsKey = k;
+      if (!busy) { clearTimeout(midi.t); midi.t = setTimeout(detect, 900); }
+    });
   }
   return access;
 }
 
+let portsKey = '', detecting = false, detectAgain = false;
+const plugged = () => access ? [...access.inputs.values(), ...access.outputs.values()]
+  .filter(p => p.state === 'connected').map(p => p.id).sort().join('|') : '';
+
 async function detect() {
   if (busy) return;
+  if (detecting) { detectAgain = true; return; }
+  detecting = true;
   try {
     const up = new FM1OTA.Updater(await midi());
-    setState('Recherche…', 'busy');
+    if (!$('dot').classList.contains('on')) setState('Recherche…', 'busy');
     const dev = await up.find();
-    if (!dev) { setState('Non détecté (ports vus : ' + ([...access.inputs.values()].map(p => p.name).join(', ') || 'aucun') + ')'); return; }
+    if (!dev) { setState('Non détecté (ports vus : ' + ([...access.inputs.values()].filter(p => p.state === 'connected').map(p => p.name).join(', ') || 'aucun') + ')'); return; }
     dev.link.close();
     setState(dev.id.loader ? 'En mode mise à jour (' + dev.id.text + ') : relance l’installation pour la terminer' : label(dev.id.text), 'on');
   } catch (e) { setState(e.message || String(e)); }
+  finally {
+    portsKey = plugged();               // les ouvertures/fermetures de cette détection ne comptent pas
+    detecting = false;
+    if (detectAgain) { detectAgain = false; setTimeout(detect, 300); }
+  }
 }
 
 const guard = e => { e.preventDefault(); e.returnValue = ''; };
