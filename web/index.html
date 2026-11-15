@@ -81,8 +81,7 @@ const $ = id => document.getElementById(id);
 
 /* Firmwares proposés. latest.json : { file, product, size, sha256, commit, date, message } */
 const CATALOG = [
-  { key: 'romsounds', name: 'ROMsounds', note: 'firmware de test (base Dinghy 0.5)', base: './' },
-  { key: 'sonar', name: 'Spring’s Sonar', note: 'dépôt public CDT-Ambiance', base: 'https://raw.githubusercontent.com/bananebleue/CDT-Ambiance/fm1-builds/' }
+  { key: 'romsounds', name: 'ROMsounds', note: 'firmware de test (base Dinghy 0.5)', base: './' }
 ];
 // Firmwares officiels de M-VAVE acceptés, à l'octet près (SHA-256 de FM-1.fwsc)
 const OFFICIAL = {
@@ -90,7 +89,7 @@ const OFFICIAL = {
   'db1642b2b6fa5c2cccb11ffd13878068bb28601678d3644049f99dc40e7edb8a': { v: 'V15', product: 'FM-1_015' }
 };
 const NAMES = [
-  [/^FM-1_95\d$/, 'ROMsounds'], [/^FM-1_96\d$/, 'Spring’s Sonar'], [/^FM-1_99\d$/, 'Dinghy'],
+  [/^FM-1_95\d$/, 'ROMsounds'], [/^FM-1_99\d$/, 'Dinghy'],
   [/^FM-1_91\d$/, 'Felucca'], [/^FM-1_900$/, 'SLOOP'], [/^FM-1_93\d$/, 'sloopDX'], [/^FM-1_0\d\d$/, 'firmware officiel M-VAVE']
 ];
 const nameOf = id => { for (const [re, n] of NAMES) if (re.test(id)) return n; return 'firmware inconnu'; };

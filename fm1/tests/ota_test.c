@@ -163,8 +163,8 @@ static int area_erased(void)
     return 1;
 }
 
-/* Spring's Sonar : un second paquet, facultatif, est le firmware en place (sa zone de démarrage est en flash) ;
- * le premier est celui qu'on installe, par exemple FM-1.fwsc de M-VAVE depuis Spring's Sonar */
+/* Un second paquet, facultatif, est le firmware en place (sa zone de démarrage est en flash) ;
+ * le premier est celui qu'on installe, par exemple FM-1.fwsc de M-VAVE depuis un firmware maison */
 static uint8_t *dev_logical;
 static void reset_dev(void)
 {

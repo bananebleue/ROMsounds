@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only
- * Installateur de firmware FM-1 par Web MIDI (CDT Compagnon).
+ * Installateur de firmware FM-1 par Web MIDI (ROMsounds).
  * Transposition de tools/fm1_install.py (Dinghy / Felucca, © 2026 Leo Kuroshita, Hügelton Instruments) :
  * même format de paquet, mêmes contrôles, même dialogue « l'appareil demande, l'hôte répond ».
  *   étape 1 : le firmware en place lit une partie du paquet et démarre le chargeur de mise à jour ;
@@ -177,7 +177,7 @@ function loadPackage(raw, force = false) {
   if (!/^[^_]+_\d+$/.test(product)) throw new InstallError('badpkg', 'ce n’est pas un paquet FM-1 (identité « ' + product + ' »)');
   if (!hasMarker(raw) && !force)
     throw new InstallError('badpkg', 'ce paquet n’a pas le chargeur de mise à jour Felucca : seuls les paquets Felucca/Dinghy '
-      + '(comme Spring’s Sonar) s’installent ici. Pour la V15 officielle, utilise le bouton « official V15 » du Firmware Hub.');
+      + '(comme ROMsounds) s’installent ici, et le firmware officiel M-VAVE non modifié.');
   const { image } = deinterleave(raw);
   const bad = packageDamage(image);
   if (bad) throw new InstallError('badpkg', 'paquet abîmé (' + bad + ') : rien n’a été écrit. Télécharge-le à nouveau.');

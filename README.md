@@ -12,9 +12,9 @@ lecteur.
 | | |
 | --- | --- |
 | `fm1/` | firmware : Dinghy 0.5 (zvenson/dinghy ea1b6bf) + `ota.c` corrigé (retour au firmware officiel, règle de felucca-bsp) ; app `firmware/src/romsounds.c` ; identité `FM-1_950` (95N, à vérifier dans le Firmware Hub avant toute publication) ; `STORE_MAGIC` « RSND » |
-| `web/` | page d'installation (Web MIDI, Chrome ou Edge) : ROMsounds, Spring's Sonar, un fichier `.fwsc`, ou le firmware officiel |
+| `web/` | page d'installation (Web MIDI, Chrome ou Edge) : ROMsounds, un fichier `.fwsc`, ou le firmware officiel |
 | `tests/fm1ota_test.js` | l'installateur web contre un FM-1 simulé : `node tests/fm1ota_test.js` |
-| `.github/workflows/romsounds.yml` | compilation, bancs d'essai, tests de changement de firmware (ROMsounds ↔ Spring's Sonar, officiel V16 par-dessus ROMsounds), publication sur GitHub Pages |
+| `.github/workflows/romsounds.yml` | compilation, bancs d'essai, tests de changement de firmware (Dinghy publié par-dessus ROMsounds, officiel V16 par-dessus ROMsounds), publication sur GitHub Pages |
 
 ## Publication
 

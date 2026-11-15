@@ -8,7 +8,7 @@ comme la plateforme Dinghy / Felucca / SLOOP sur laquelle il repose.
 | | |
 | --- | --- |
 | Les changements de ROMsounds : `firmware/src/romsounds.c` (renommage de `dinghy.c`, nom de l'application), `tools/build.py` (nom, identité FM-1_95N, couleur), `firmware/src/store.h` (STORE_MAGIC « RSND »), la page `../web/`, le workflow | Copyright (C) 2026 Stéphane Faure |
-| `../web/fm1ota.js` et `../tests/fm1ota_test.js` : transposition JavaScript de `tools/fm1_install.py`, reprise de CDT-Ambiance | Copyright (C) 2026 Stéphane Faure, GPL-3.0-only |
+| `../web/fm1ota.js` et `../tests/fm1ota_test.js` : transposition JavaScript de `tools/fm1_install.py` | Copyright (C) 2026 Stéphane Faure, GPL-3.0-only |
 | Dans `firmware/src/ota.c` : `ota_boot_valid()` et la règle de l'étape 2 (« tout programme de mise à jour bien formé », pour revenir au firmware officiel V16), repris de [felucca-bsp](https://github.com/hugelton/felucca-bsp) `chip/ota.c` (9670b5d) | Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments, MPL-2.0 ; combiné à ce projet GPL-3.0 comme le permet la MPL 2.0 (§ 3.3) |
 
 La plateforme, ses auteurs et ses licences, inchangés :

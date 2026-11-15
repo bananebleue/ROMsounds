@@ -1,5 +1,5 @@
 # ROMsounds : compiler le firmware du M-VAVE FM-1 (base Dinghy 0.5), lancer les bancs d'essai sans matériel, vérifier
-# le changement de firmware (officiel V16, Spring's Sonar, dans les deux sens), puis publier la page d'installation et
+# le changement de firmware (officiel V16, Dinghy publié, dans les deux sens), puis publier la page d'installation et
 # le dernier paquet sur GitHub Pages. Chaîne JieLi : pkgman.jieliapp.com (tools/get_toolchain.sh) ; SDK AC79 : gitee.com.
 name: romsounds
 
@@ -58,26 +58,24 @@ jobs:
       - name: Bancs d'essai de Dinghy (sans matériel)
         run: sh tests/run_tests.sh
 
-      - name: Changer de firmware (ota.c) - officiel V16, Spring's Sonar, dans les deux sens
+      - name: Changer de firmware (ota.c) - officiel V16, Dinghy, dans les deux sens
         run: |
           mkdir -p build/tests
           cc -O2 -w -o build/tests/ota_test tests/ota_test.c
           rs=build/romsounds.fwsc
           echo "=== ROMsounds par-dessus ROMsounds"
           build/tests/ota_test "$rs"
-          # Spring's Sonar : dépôt public CDT-Ambiance. Son ota.c doit être celui-ci, à l'octet près : alors le test
-          # « ROMsounds par-dessus Spring's Sonar » (ota.c du sonar) est aussi celui de ce dépôt.
-          base=https://raw.githubusercontent.com/bananebleue/CDT-Ambiance
-          if curl -sSf -m 60 -o "$RUNNER_TEMP/sonar.fwsc" "$base/fm1-builds/spring-sonar.fwsc" &&
-             curl -sSf -m 60 -o "$RUNNER_TEMP/sonar_ota.c" "$base/firmware/fm1/firmware/src/ota.c"; then
-            if cmp -s "$RUNNER_TEMP/sonar_ota.c" firmware/src/ota.c; then echo "ota.c identique à celui de Spring's Sonar"
-            else echo "::warning::ota.c diffère de celui de Spring's Sonar : le sens Sonar -> ROMsounds n'est pas couvert"; fi
-            echo "=== Spring's Sonar par-dessus ROMsounds"
-            build/tests/ota_test "$RUNNER_TEMP/sonar.fwsc" "$rs"
-            echo "=== ROMsounds par-dessus Spring's Sonar"
-            build/tests/ota_test "$rs" "$RUNNER_TEMP/sonar.fwsc"
+          # Un autre firmware maison : Dinghy tel que publié par son auteur (zvenson/dinghy, dernière release FM-1)
+          rel=$(curl -sSf -m 60 -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/zvenson/dinghy/releases?per_page=10 || true)
+          url=$(printf "%s" "$rel" | jq -r "[.[].assets[].browser_download_url | select(test(\"/dinghy-[0-9.]+\\\\.fwsc$\"))] | first // empty")
+          if [ -n "$url" ] && curl -sSfL -m 60 -o "$RUNNER_TEMP/dinghy.fwsc" "$url"; then
+            echo "Dinghy : $url"
+            echo "=== Dinghy par-dessus ROMsounds"
+            build/tests/ota_test "$RUNNER_TEMP/dinghy.fwsc" "$rs"
+            echo "=== ROMsounds par-dessus Dinghy (ota.c de ROMsounds : sens indicatif)"
+            build/tests/ota_test "$rs" "$RUNNER_TEMP/dinghy.fwsc"
           else
-            echo "::warning::Spring's Sonar injoignable : tests de changement sautés"
+            echo "::warning::paquet Dinghy introuvable : test de changement entre firmwares maison sauté"
           fi
           # FM-1.fwsc de M-VAVE : téléchargé pour ce test seulement, jamais publié ni gardé en artefact
           if curl -sSf -m 120 -o "$RUNNER_TEMP/FM-1.fwsc" https://yms-file-store.oss-cn-hongkong.aliyuncs.com/software/firmware/FM-1.fwsc; then
@@ -88,6 +86,8 @@ jobs:
           else
             echo "::warning::FM-1.fwsc de M-VAVE injoignable : test du retour officiel sauté"
           fi
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Site (page d'installation + dernier paquet)
         run: |
