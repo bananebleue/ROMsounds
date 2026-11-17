@@ -81,7 +81,7 @@ static int nes(const char *path)
     b(0x00); b(0xC0);
     for (i = 0; i < 1024; i++) b(i % 32 < 16 ? 0xFF : 0x00);
     w32(at, 1026);
-    nesw(0x4015, 0x0F); nesw(0x4017, 0x40);
+    nesw(0x4017, 0x40);                          /* (pas de $4015 : beaucoup de vrais VGM NES n'en écrivent jamais) */
     nesw(0x4000, 0xBF); nesw(0x4001, 0x08); nesw(0x4002, 253); nesw(0x4003, 0x08);      /* carrée 1 : 440 Hz, 50 % */
     wait(44100);
     nesw(0x4000, 0xB0);

@@ -83,6 +83,9 @@ static void nes_init(nes_t *a, uint32_t clock, const uint8_t *mem)
     a->dm_rate = 428; a->dm_timer = 428; a->dm_silent = 1; a->dm_bits = 8;
     a->mem = mem;
     a->p[0].timer = a->p[1].timer = a->tr_timer = a->no_timer = 1;
+    /* au démarrage, carrés, triangle et bruit sont actifs ($4015 = $0F) comme dans un lecteur NSF et dans libvgm
+     * (NSFPlay, « unmute on reset ») : beaucoup de VGM NES n'écrivent jamais $4015 et seraient muets sans ça */
+    a->p[0].on = a->p[1].on = a->tr_on = a->no_on = 1;
 }
 
 static uint32_t nes_sweep_target(const nes_pulse_t *p, uint32_t ch)

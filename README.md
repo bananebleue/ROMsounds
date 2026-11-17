@@ -18,8 +18,10 @@ Le FM-1 le joue aussitôt et le **garde en mémoire flash** (bibliothèque d'env
 - Niveaux et rendu comparés à libvgm (`vgm2wav`) : même enveloppe, mêmes niveaux.
 - Sur le FM-1 : PLAY pause / lecture ; REC revenir au début ; OCT− / OCT+ ou SELECT : morceau précédent / suivant ;
   REC maintenu 2 s : retirer le morceau de la bibliothèque. Au démarrage, le dernier morceau joué est prêt.
-- Bibliothèque : FM-1 0x97000-0xE0000 (le magasin de données de la famille Felucca / Dinghy) ; installer un autre
-  firmware peut l'effacer (le FM-1 le voit et repart d'une bibliothèque vide).
+- Bibliothèque : FM-1 0x97000-0xE0000 (~292 Ko, le magasin de données de la famille Felucca / Dinghy) ; installer un
+  autre firmware peut l'effacer (le FM-1 le voit et repart d'une bibliothèque vide). L'écran affiche la place libre ;
+  quand un trou laissé par un morceau retiré ne suffit pas, les morceaux sont tassés avant d'en retirer un ancien.
+  Ordre de grandeur : un morceau Mega Drive 15-40 Ko, Game Boy ou NES 1-10 Ko (40 morceaux au plus).
 
 | | |
 | --- | --- |

@@ -346,7 +346,43 @@ static void lib_remove(uint32_t i)
     if (lib.cur >= lib.count) lib.cur = lib.count ? lib.count - 1u : 0u;
 }
 
+static void show_busy(const char *what);
+static uint32_t lib_free_sect(void)
+{
+    uint32_t i, used = 0;
+    for (i = 0; i < lib.count; i++) used += lib.e[i].nsect;
+    return used < LIB_NS ? LIB_NS - used : 0u;
+}
+
+/* tasser : chaque morceau descend contre le précédent, secteur par secteur (copie montante : la destination est
+ * toujours sous la source, on n'écrase que du déjà copié ou du libre). La liste est enregistrée après chaque morceau
+ * déplacé ; une coupure au milieu d'un déplacement ne perd que ce morceau-là (son CRC ne correspond plus). */
+static int lib_compact(void)
+{
+    static uint8_t buf[512];
+    uint32_t next = 0;
+    for (;;) {
+        uint32_t i, best = LIB_MAX, k, j;
+        for (i = 0; i < lib.count; i++)            /* le premier morceau au-dessus de « next » */
+            if (lib.e[i].sect >= next && (best == LIB_MAX || lib.e[i].sect < lib.e[best].sect)) best = i;
+        if (best == LIB_MAX) return 0;
+        if (lib.e[best].sect > next) {
+            lib_ent_t *e = &lib.e[best];
+            for (k = 0; k < e->nsect; k++) {
+                uint32_t from = LIB_LO + ((uint32_t)e->sect + k) * 0x1000u, to = LIB_LO + (next + k) * 0x1000u;
+                if (lib_erase(to)) return -1;
+                for (j = 0; j < 0x1000u; j += sizeof buf)
+                    if (lib_read(from + j, buf, sizeof buf) || lib_write(to + j, buf, sizeof buf)) return -1;
+            }
+            e->sect = (uint16_t)next;
+            if (lib_save()) return -1;
+        }
+        next = (uint32_t)lib.e[best].sect + lib.e[best].nsect;
+    }
+}
+
 /* le morceau en RAM (vgm_buf, size octets) dans la bibliothèque : son index, ou -1 (pas de flash, trop gros) */
+static uint32_t lib_dropped;                    /* morceaux retirés pour faire de la place au dernier reçu */
 static int lib_store(uint32_t size, uint32_t crc)
 {
     uint32_t ns = (size + 0xFFFu) / 0x1000u, i, at, c;
@@ -355,9 +391,16 @@ static int lib_store(uint32_t size, uint32_t crc)
     if (!lib_ok() || ns > LIB_NS) return -1;
     for (i = 0; i < lib.count; i++)
         if (lib.e[i].size == size && lib.e[i].crc == crc) { lib.cur = (uint16_t)i; lib_save(); return (int)i; }
-    while ((s = lib_free_run(ns)) < 0 || lib.count >= LIB_MAX) {   /* place : on retire le plus ancien */
+    lib_dropped = 0;
+    while ((s = lib_free_run(ns)) < 0 || lib.count >= LIB_MAX) {   /* place : tasser, sinon retirer le plus ancien */
         uint32_t old = 0;
+        if (lib.count < LIB_MAX && lib_free_sect() >= ns) {
+            show_busy("Rangement...");
+            if (lib_compact()) return -1;
+            continue;
+        }
         if (!lib.count) return -1;
+        lib_dropped++;
         for (i = 1; i < lib.count; i++) if (lib.e[i].seq < lib.e[old].seq) old = i;
         lib_remove(old);
     }
@@ -439,7 +482,7 @@ static void draw_song(void)                     /* système, titre, jeu, place d
     draw_text_box(0, 106, 240, &FONT_S, game, C_OFF, 1);
     if (lib.count && lib_ok()) {
         p = put_u(s, (uint32_t)lib.cur + 1u); p = put_s(p, " / "); p = put_u(p, lib.count);
-        p = put_s(p, "   OCT-/+ SELECT"); *p = 0;
+        p = put_s(p, "   "); p = put_u(p, lib_free_sect() * 4u); p = put_s(p, " Ko libres"); *p = 0;
         draw_text_box(0, 174, 240, &FONT_S, s, C_OFF, 1);
     } else draw_text_box(0, 174, 240, &FONT_S, "pas en memoire : joue seulement", C_OFF, 1);
 }
@@ -546,6 +589,8 @@ static void app_main(void)
                 if (lib_ok()) {
                     show_busy("Enregistrement...");
                     if (lib_store(rx_size, rx_crc32(vgm_buf, rx_size)) < 0) say("pas enregistre (flash)");
+                    else if (lib_dropped == 1u) say("plein : le plus ancien retire");
+                    else if (lib_dropped) say("plein : des anciens retires");
                     else say("enregistre dans le FM-1");
                 }
                 loaded = 1; song_start(); underruns = 0; ack_cmd = 3;

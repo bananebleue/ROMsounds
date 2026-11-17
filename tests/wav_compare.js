@@ -2,6 +2,8 @@
 // ROMsounds : compare deux WAV 16 bits stéréo (le lecteur sur PC face à libvgm vgm2wav) par tranches, en niveau RMS.
 //   node tests/wav_compare.js NOTRE.wav REFERENCE.wav [tranche_s] [durée_s] [écart_max_%]
 //   (sans écart max : affiche seulement ; avec : échoue si une tranche assez forte s'écarte de plus que ça)
+//   HP=1 : passe-haut (~14 Hz, celui du lecteur NES) sur les deux signaux avant de comparer : libvgm n'en a pas, et les
+//   paliers continus (triangle arrêté, fins de notes) gonfleraient sa RMS sur des tranches longues
 'use strict';
 const fs = require('fs');
 function load(p) {
@@ -13,7 +15,20 @@ function load(p) {
     if (id === 'data') { data = b.subarray(o + 8, o + 8 + len); break; }
     o += 8 + len + (len & 1);
   }
-  return { rate, data, n: data.length >> 2 };
+  const w = { rate, data, n: data.length >> 2 };
+  if (process.env.HP) {
+    const d = Buffer.from(data);
+    for (let ch = 0; ch < 2; ch++) {
+      let px = 0, py = 0;
+      for (let i = 0; i < w.n; i++) {
+        const x = data.readInt16LE(i * 4 + ch * 2), y = x - px + py - py / 512;
+        px = x; py = y;
+        d.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(y))), i * 4 + ch * 2);
+      }
+    }
+    w.data = d;
+  }
+  return w;
 }
 const [A, B] = [load(process.argv[2]), load(process.argv[3])];
 const step = +(process.argv[4] || 0.5), dur = +(process.argv[5] || Math.min(A.n / A.rate, B.n / B.rate)), tol = process.argv[6];
