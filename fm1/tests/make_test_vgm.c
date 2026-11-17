@@ -4,6 +4,8 @@
  * attentes 0x61 / 0x62 / 0x7n, et une boucle.
  *   cc -O2 -o build/make_test_vgm tests/make_test_vgm.c && build/make_test_vgm build/test.vgm [long]
  *   long : 60 s de DAC en plus dans la boucle (un fichier de plus de 300 Ko, comme les vraies pistes à batterie)
+ *   stream : 2 s de flux DAC (VGM 1.60 : 0x90-0x95) en plus dans la boucle
+ *   gg : un morceau Game Gear (SN76489 seul, stéréo), 4 s, sans boucle
  * Déroulé (secondes) : 0-2 accord FM, 2-3 PSG seul (3 voies), 3-4 bruit, 4-5 DAC (une rampe), puis boucle sur le PSG. */
 #include <stdio.h>
 #include <stdint.h>
@@ -35,7 +37,24 @@ int main(int argc, char **argv)
     uint32_t v, o, i, pcm_at, loop_at;
     FILE *f;
     memcpy(buf, "Vgm ", 4);
-    w32(0x08, 0x150);
+    if (argc > 2 && argv[2][0] == 'g') {              /* gg : Game Gear (SN76489 seul, stéréo 0x4F), 4 s */
+        w32(0x08, 0x151); w32(0x0C, 3579545); w32(0x34, 0x40 - 0x34);
+        buf[0x28] = 0x09; buf[0x29] = 0x00; buf[0x2A] = 16;   /* bruit Sega */
+        psg(0x80 | 0x0D); psg(0x0D); psg(0x90 | 1);
+        psg(0xA0 | 0x09); psg(0x0A); psg(0xB0 | 3);
+        b(0x4F); b(0xF0); wait(44100);                  /* tout à gauche */
+        b(0x4F); b(0x0F); wait(44100);                  /* tout à droite */
+        b(0x4F); b(0xFF); psg(0xE4); psg(0xF2); wait(44100);   /* partout, + bruit */
+        psg(0x9F); psg(0xBF); psg(0xFF); wait(44100);
+        b(0x66);
+        w32(0x04, n - 4); w32(0x18, total);
+        f = fopen(argv[1], "wb");
+        if (!f) return 1;
+        fwrite(buf, 1, n, f); fclose(f);
+        printf("test VGM (Game Gear) : %u octets\n", n);
+        return 0;
+    }
+    w32(0x08, argc > 2 && argv[2][0] == 's' ? 0x160 : 0x150);
     w32(0x0C, 3579545);                 /* SN76489 */
     w32(0x2C, 7670453);                 /* YM2612 */
     w32(0x34, 0x40 - 0x34);             /* données à 0x40 */
@@ -76,7 +95,18 @@ int main(int argc, char **argv)
         b(0x84); total += 4;
     }
     ym(0, 0x2B, 0x00);
-    if (argc > 2) {                                    /* long : 60 s de DAC à ~11 kHz, des motifs qui varient */
+    if (argc > 2 && argv[2][0] == 's') {              /* stream : 2 s de flux DAC (VGM 1.60), comme libvgm les lit */
+        ym(0, 0x2B, 0x80);
+        b(0x90); b(0); b(0x02); b(0x00); b(0x2A);        /* flux 0 -> YM2612, port 0, registre 0x2A */
+        b(0x91); b(0); b(0x00); b(1); b(0);              /* banque 0 (PCM du YM2612), pas 1 */
+        b(0x92); b(0); b(0x11); b(0x2B); b(0); b(0);     /* 11025 Hz */
+        b(0x95); b(0); b(0); b(0); b(0x01);              /* bloc 0, en boucle */
+        wait(44100);
+        b(0x93); b(0); b(0x00); b(0x02); b(0); b(0); b(0x02); b(0xF4); b(0x01); b(0); b(0);   /* depuis 512, 500 ms */
+        wait(44100);
+        b(0x94); b(0);
+        ym(0, 0x2B, 0x00);
+    } else if (argc > 2) {                             /* long : 60 s de DAC à ~11 kHz, des motifs qui varient */
         ym(0, 0x2B, 0x80);
         for (i = 0; i < 60u * 11025u; i++) {
             if (i % 2000 == 0) { b(0xE0); b((i / 2000) % 7 * 200); b(0); b(0); b(0); }

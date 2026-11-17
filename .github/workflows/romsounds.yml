@@ -56,6 +56,17 @@ jobs:
           ROMSOUNDS_RSM=build/test.rsm sh tests/run_host.sh tests/scripts/lecteur.txt
           # FM 0-2 s, PSG 2-3 s, bruit 3-4 s, DAC 4-5 s, boucle sur le PSG, pause (PLAY) à 6,2 s
           node ../tests/wav_check.js build/host/romsounds.wav 0.2-1.8:5000 2.2-2.9:2000 3.2-3.9:800 4.1-4.9:2000 5.2-6.0:2000 6.5-6.9:0
+          # flux DAC (VGM 1.60) convertis par la page : le flux en boucle (5-6 s) puis 500 ms depuis l'octet 512
+          build/make_test_vgm build/stream.vgm stream
+          node ../tests/rx_test.js build/stream.vgm build/stream.syx build/stream.rsm
+          printf '9000 end\n' > build/fin9.txt
+          ROMSOUNDS_RSM=build/stream.rsm sh tests/run_host.sh build/fin9.txt
+          node ../tests/wav_check.js build/host/romsounds.wav 5.1-5.9:3000 6.1-6.4:1000   # (niveaux égaux à libvgm, vérifié)
+          # bibliothèque : trois morceaux reçus et gardés, le précédent (OCT-), un retiré (REC maintenu), Game Gear
+          build/make_test_vgm build/gg.vgm gg
+          node ../tests/rx_test.js build/gg.vgm build/gg.syx build/gg.rsm
+          ROMSOUNDS_RSM=build/test.rsm,build/stream.rsm,build/gg.rsm ROMSOUNDS_EVERY=3000 sh tests/run_host.sh tests/scripts/bibliotheque.txt
+          node ../tests/wav_check.js build/host/romsounds.wav 0.3-2.8:5000 3.4-5.8:3000 6.4-8.8:1000 9.8-11.8:3000 16.0-16.9:0
 
       - name: Chaîne JieLi (pkgman.jieliapp.com)
         run: sh tools/get_toolchain.sh

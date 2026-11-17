@@ -51,8 +51,8 @@
   </section>
 
   <section>
-    <h2>Lecteur Mega Drive</h2>
-    <p class="sub" style="margin:0 0 10px">Avec ROMsounds sur le FM-1 : choisis un fichier VGM (ou VGZ) de musique Mega Drive, puis envoie-le. Le FM-1 le joue aussitôt (300 Ko au plus).</p>
+    <h2>Lecteur Mega Drive · Master System · Game Gear</h2>
+    <p class="sub" style="margin:0 0 10px">Avec ROMsounds sur le FM-1 : choisis un fichier VGM (ou VGZ) de musique Mega Drive, Master System ou Game Gear, puis envoie-le. Le FM-1 le joue aussitôt et le garde en mémoire, même éteint (environ 290 Ko pour la bibliothèque ; les plus anciens laissent la place). Sur le FM-1 : OCT− / OCT+ ou SELECT pour changer de morceau, REC maintenu 2 s pour en retirer un.</p>
     <div class="row">
       <input type="file" id="vgmFile" accept=".vgm,.vgz" class="grow">
       <button id="vgmSend" disabled>Envoyer au FM-1</button>
@@ -293,7 +293,7 @@ $('vgmFile').addEventListener('change', async () => {
     lines.push('Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489'].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
     lines.push('Durée : ' + mmss(v.total / 44100) + (v.loop ? ' (boucle de ' + mmss(v.loop / 44100) + ')' : ''));
     lines.push('Pour le FM-1 : ' + kb(v.blob.length) + ' (fichier ouvert : ' + kb(v.raw) + ' ; échantillons ' + kb(v.pcmLen) + ', musique compressée ' + kb(v.aLen + v.bLen) + ')');
-    if (v.dacStream) lines.push('Attention : ce fichier utilise des « flux DAC », pas encore lus par ROMsounds : les échantillons (batterie, voix) manqueront.');
+    if (v.dacStream) lines.push('Flux DAC (VGM 1.60) : convertis par la page pour le FM-1.');
     if (v.blob.length > VGM_MAX) throw new Error('trop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus)');
     vgm = v;
     $('vgmLog').textContent = lines.filter(Boolean).join('\n');
@@ -330,7 +330,7 @@ async function sendVgm() {
       }
     };
     const send = arr => { if (!dev.link.send(arr)) throw new Error('le FM-1 a été déconnecté'); };
-    const fr = vgmFrames(vgm.blob, vgm.title, vgm.game, FM1OTA.pack7);
+    const fr = vgmFrames(vgm.blob, vgm.title, vgm.game, FM1OTA.pack7, vgm.sys);
     acks.length = 0;
     send(fr.begin);
     const hello = await waitAck(117, v => v === 1 || v === 2, 2000);
@@ -346,8 +346,9 @@ async function sendVgm() {
       if (seq % 8 === 0) log('Envoi : ' + bar.value + ' % (' + kb((seq + 1) * 512) + ' sur ' + kb(vgm.blob.length) + ')');
     }
     send(fr.end);
-    if (await waitAck(117, v => v === 3, 8000) === null) throw new Error('le FM-1 n’a pas confirmé la fin de l’envoi');
-    log('Envoyé en ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s : le FM-1 joue « ' + (vgm.title || 'le morceau') + ' ».\nPLAY : pause / lecture · REC : revenir au début.');
+    log('Envoyé : le FM-1 enregistre le morceau dans sa mémoire…');
+    if (await waitAck(117, v => v === 3, 30000) === null) throw new Error('le FM-1 n’a pas confirmé la fin de l’envoi');
+    log('Envoyé en ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s : le FM-1 joue « ' + (vgm.title || 'le morceau') + ' » et l’a gardé en mémoire.\nPLAY : pause / lecture · REC : revenir au début · OCT− / OCT+ : morceau précédent / suivant.');
   } catch (e) {
     log('Échec : ' + (e.message || e));
   } finally {

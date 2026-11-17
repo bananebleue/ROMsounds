@@ -75,7 +75,7 @@ static TINF_DATA inf;
 static uint8_t obuf[256];
 static uint32_t obuf_r, obuf_n, inf_done, part_waited;   /* part_waited : la partie en cours a déjà fait attendre */
 static vgm_t song;
-static char title[32], game[32];
+static char title[32], game[32], sys[24];
 static uint32_t loaded, ended, wait, played;    /* played : trames jouées (44,1 kHz) */
 static void *ym;
 static psg_t psg;
@@ -86,6 +86,7 @@ static void vgm_ym(uint32_t port, uint32_t reg, uint32_t val)
     ym2612_write(ym, (UINT8)(port * 2u + 1u), (UINT8)val);
 }
 static void vgm_psg(uint32_t val) { psg_write(&psg, val); }
+static void vgm_psg_stereo(uint32_t val) { psg_stereo(&psg, val); }
 
 static void part_open(uint32_t which)           /* 0 : A (avant la boucle), 1 : B (la boucle) */
 {
@@ -138,6 +139,7 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
     song.ym_clock = rd32(m + 4); song.psg_clock = rd32(m + 8);
     song.total = rd32(m + 12); song.loop_samples = rd32(m + 16);
     song.warn = rd32(m + 32);
+    song.psg_cfg = rd32(m + 36);
     song.pcm = m + 40; song.pcm_len = pcm;
     part_a = m + 40 + pcm; len_a = a;
     part_b = part_a + a; len_b = b;
@@ -157,7 +159,7 @@ static void song_start(void)
     rate = yc / 144u;
     ym = ym2612_init(NULL, yc, rate, NULL, NULL);
     ym2612_reset_chip(ym);
-    psg_init(&psg, song.psg_clock ? song.psg_clock : 3579545u);
+    psg_init(&psg, song.psg_clock ? song.psg_clock : 3579545u, song.psg_cfg & 0xFFFFu, song.psg_cfg >> 16 & 0xFFu);
     ym_step = (rate << 16) / 44100u;            /* (rate < 65536 : pas de débordement) */
     ym_pos = 0; mbuf_n = 0; mbuf_l[0] = mbuf_r[0] = 0;
     song.pcm_pos = 0;
@@ -179,6 +181,12 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
         part_waited = 1;
         n = wait < left ? wait : left;
         for (j = 0; j < n; j++) { p += ym_step; k += p >> 16; p &= 0xFFFFu; }
+        if (!song.ym_clock) {                    /* Master System, Game Gear : pas de YM2612, pas de calcul */
+            psg_render(&psg, mix + 2u * o, n);
+            for (j = 0; j < 2u * n; j++) mix[2u * o + j] <<= 1;   /* PSG seul : x 2, comme libvgm (mesuré) */
+            wait -= n; left -= n; o += n; played += n;
+            continue;
+        }
         mbuf_l[0] = mbuf_l[mbuf_n]; mbuf_r[0] = mbuf_r[mbuf_n];
         if (k) ym2612_update_one(ym, k, b);
         mbuf_n = k;
@@ -216,6 +224,10 @@ static void app_sysex(const uint8_t *p, uint32_t n)
         i++; t = 0;
         while (i < n && p[i] && t < sizeof game - 1u) game[t++] = (char)p[i++];
         game[t] = 0;
+        while (i < n && p[i]) i++;
+        i++; t = 0;
+        while (i < n && p[i] && t < sizeof sys - 1u) sys[t++] = (char)p[i++];
+        sys[t] = 0;
         ack_cmd = 2;                            /* 2 : ce firmware attend un RSM1 (1 : l'ancien, un VGM brut) */
     } else if (p[3] == 2u && n >= 6u) {         /* données */
         uint32_t seq = (uint32_t)p[4] | (uint32_t)p[5] << 7, off = seq * 512u, want, got;
@@ -231,6 +243,134 @@ static void app_sysex(const uint8_t *p, uint32_t n)
         if (rx_crc32(vgm_buf, rx_size) != rd35(p + 4)) { ack_cmd = 0x45; return; }
         load_req = 1;                           /* la boucle principale ouvre le morceau et répond */
     }
+}
+
+/* ---- bibliothèque : les morceaux reçus, gardés en mémoire flash (après extinction aussi)
+ * Zone : FM-1 0x97000-0xE0000 (292 Ko, le magasin de la famille Felucca / Dinghy, store.h) ; SMK-37 : les slots.
+ * Chaque morceau : des secteurs de 4 Ko qui se suivent ; la liste dans le blob 0 (CRC, platform.c). Quand la place
+ * manque, les morceaux les plus anciens s'en vont. Un morceau déjà présent (même taille, même CRC) n'est pas recopié. */
+#if BOARD_SMK37
+#define LIB_LO SLOTS_AT
+#define LIB_HI (SLOTS_AT + NSLOT * SLOT_SECT * 0x1000u)
+#else
+#define LIB_LO 0x00097000u
+#define LIB_HI 0x000E0000u
+#endif
+#define LIB_NS ((LIB_HI - LIB_LO) / 0x1000u)  /* secteurs */
+#define LIB_MAX 40u
+#define LIB_MAGIC 0x3142494Cu                  /* "LIB1" */
+typedef struct {
+    uint16_t sect, nsect;
+    uint32_t size, crc, seq;
+    char title[28], game[28], sys[16];
+} lib_ent_t;
+static struct {
+    uint32_t magic;
+    uint16_t count, cur;                        /* cur : le dernier morceau joué */
+    uint32_t seq;
+    lib_ent_t e[LIB_MAX];
+} lib;
+_Static_assert(sizeof lib <= SECTOR_MAX, "la liste doit tenir dans un blob");
+#if !BOARD_SMK37
+_Static_assert(LIB_LO >= FL_DATA_LO && LIB_HI <= FL_DATA_HI && LIB_HI <= FL_OTA_LO, "bibliothèque hors du magasin FL_DATA");
+#endif
+
+#ifdef DINGHY_HOST                              /* sur PC : une mémoire flash simulée */
+static uint8_t host_flash[0x100000];
+static int lib_ok(void) { return 1; }
+static int lib_erase(uint32_t at) { memset(host_flash + at, 0xFF, 0x1000); return 0; }
+static int lib_write(uint32_t at, const uint8_t *p, uint32_t n) { memcpy(host_flash + at, p, n); return 0; }
+static int lib_read(uint32_t at, uint8_t *p, uint32_t n) { memcpy(p, host_flash + at, n); return 0; }
+#else
+static int lib_ok(void) { return flash_ok; }
+static int lib_erase(uint32_t at) { uint32_t took; fm1_wdt_feed(); return fl_erase4k(at, &took); }
+static int lib_write(uint32_t at, const uint8_t *p, uint32_t n) { fm1_wdt_feed(); return fl_write(at, p, n); }
+static int lib_read(uint32_t at, uint8_t *p, uint32_t n) { fm1_wdt_feed(); return st_read(at, p, n); }
+#endif
+
+static void str_copy(char *d, const char *s, uint32_t n) { uint32_t i = 0; while (s[i] && i < n - 1u) { d[i] = s[i]; i++; } d[i] = 0; }
+static uint32_t crc_more(uint32_t c, const uint8_t *p, uint32_t n)   /* CRC-32 par morceaux : c = ~0 au départ */
+{
+    uint32_t k;
+    while (n--) { c ^= *p++; for (k = 0; k < 8u; k++) c = c >> 1 ^ (0xEDB88320u & (0u - (c & 1u))); }
+    return c;
+}
+
+static void lib_load(void)
+{
+    if (blob_load(0, &lib, sizeof lib) || lib.magic != LIB_MAGIC || lib.count > LIB_MAX) {
+        memset(&lib, 0, sizeof lib);
+        lib.magic = LIB_MAGIC;
+    }
+    if (lib.cur >= lib.count) lib.cur = 0;
+}
+static int lib_save(void) { return blob_save(0, &lib, sizeof lib); }
+
+static int lib_free_run(uint32_t ns)           /* le premier trou de ns secteurs, ou -1 */
+{
+    uint32_t s = 0, i;
+    while (s + ns <= LIB_NS) {
+        uint32_t hit = 0;
+        for (i = 0; i < lib.count; i++)
+            if (lib.e[i].sect < s + ns && s < (uint32_t)lib.e[i].sect + lib.e[i].nsect) { hit = (uint32_t)lib.e[i].sect + lib.e[i].nsect; break; }
+        if (!hit) return (int)s;
+        s = hit;
+    }
+    return -1;
+}
+static void lib_remove(uint32_t i)
+{
+    if (i >= lib.count) return;
+    for (; i + 1u < lib.count; i++) lib.e[i] = lib.e[i + 1u];
+    lib.count--;
+    if (lib.cur >= lib.count) lib.cur = lib.count ? lib.count - 1u : 0u;
+}
+
+/* le morceau en RAM (vgm_buf, size octets) dans la bibliothèque : son index, ou -1 (pas de flash, trop gros) */
+static int lib_store(uint32_t size, uint32_t crc)
+{
+    uint32_t ns = (size + 0xFFFu) / 0x1000u, i, at, c;
+    int s;
+    lib_ent_t *e;
+    if (!lib_ok() || ns > LIB_NS) return -1;
+    for (i = 0; i < lib.count; i++)
+        if (lib.e[i].size == size && lib.e[i].crc == crc) { lib.cur = (uint16_t)i; lib_save(); return (int)i; }
+    while ((s = lib_free_run(ns)) < 0 || lib.count >= LIB_MAX) {   /* place : on retire le plus ancien */
+        uint32_t old = 0;
+        if (!lib.count) return -1;
+        for (i = 1; i < lib.count; i++) if (lib.e[i].seq < lib.e[old].seq) old = i;
+        lib_remove(old);
+    }
+    at = LIB_LO + (uint32_t)s * 0x1000u;
+    for (i = 0; i < ns; i++) {
+        uint32_t k = size - i * 0x1000u < 0x1000u ? size - i * 0x1000u : 0x1000u;
+        if (lib_erase(at + i * 0x1000u) || lib_write(at + i * 0x1000u, vgm_buf + i * 0x1000u, k)) return -1;
+    }
+    for (i = 0, c = ~0u; i < size; i += 512u) {   /* relire : la copie doit être exacte */
+        static uint8_t chk[512];
+        uint32_t k = size - i < 512u ? size - i : 512u;
+        if (lib_read(at + i, chk, k)) return -1;
+        c = crc_more(c, chk, k);
+    }
+    if (~c != crc) return -1;
+    e = &lib.e[lib.count];
+    e->sect = (uint16_t)s; e->nsect = (uint16_t)ns; e->size = size; e->crc = crc; e->seq = ++lib.seq;
+    str_copy(e->title, title, sizeof e->title); str_copy(e->game, game, sizeof e->game); str_copy(e->sys, sys, sizeof e->sys);
+    lib.cur = lib.count++;
+    if (lib_save()) return -1;
+    return (int)lib.cur;
+}
+
+/* un morceau de la bibliothèque en RAM : 0, ou -1 (illisible) */
+static int lib_fetch(uint32_t i)
+{
+    const lib_ent_t *e = &lib.e[i];
+    if (i >= lib.count || e->size > VGM_MAX) return -1;
+    if (lib_read(LIB_LO + (uint32_t)e->sect * 0x1000u, vgm_buf, e->size)) return -1;
+    if (rx_crc32(vgm_buf, e->size) != e->crc) return -1;
+    str_copy(title, e->title, sizeof title); str_copy(game, e->game, sizeof game); str_copy(sys, e->sys, sizeof sys);
+    rx_size = e->size;
+    return song_load(e->size) ? -1 : 0;
 }
 
 /* ---- écran */
@@ -261,19 +401,27 @@ static char *put_t(char *p, uint32_t frames)    /* m:ss */
 
 static void app_idle(void) { }
 
-static void draw_song(void)
+static const char *msg;                         /* un message passager (Enregistre, Efface...) */
+static uint32_t msg_until;
+static void say(const char *m) { msg = m; msg_until = fm1_ms + 2500u; }
+
+static void draw_song(void)                     /* système, titre, jeu, place dans la bibliothèque */
 {
-    lcd_fill(0, 80, 240, 160, C_BLACK);
+    char s[40], *p;
+    lcd_fill(0, 52, 240, 188, C_BLACK);
+    draw_text_box(0, 56, 240, &FONT_S, loaded && sys[0] ? sys : "v" APP_VER, C_OFF, 1);
     if (!loaded) {
-        draw_text_box(0, 96, 240, &FONT_S, rx_active ? "Reception..." : "Aucun morceau", C_TXT, 1);
+        draw_text_box(0, 96, 240, &FONT_S, rx_active ? "Reception..." : lib.count ? "Morceau illisible" : "Aucun morceau", C_TXT, 1);
         draw_text_box(0, 120, 240, &FONT_S, rx_active ? "" : "Envoie un VGM depuis la page", C_OFF, 1);
         return;
     }
     draw_text_box(0, 84, 240, &FONT_S, title[0] ? title : "(sans titre)", C_TXT, 1);
     draw_text_box(0, 106, 240, &FONT_S, game, C_OFF, 1);
-    if (song.warn)
-        draw_text_box(0, 178, 240, &FONT_S, song.warn & VGM_W_DACSTREAM ? "flux DAC non pris en charge" : "autres puces ignorees",
-                      C_BAD, 1);
+    if (lib.count && lib_ok()) {
+        p = put_u(s, (uint32_t)lib.cur + 1u); p = put_s(p, " / "); p = put_u(p, lib.count);
+        p = put_s(p, "   OCT-/+ SELECT"); *p = 0;
+        draw_text_box(0, 174, 240, &FONT_S, s, C_OFF, 1);
+    } else draw_text_box(0, 174, 240, &FONT_S, "pas en memoire : joue seulement", C_OFF, 1);
 }
 
 static void draw_time(uint32_t pct, uint32_t cuts)
@@ -294,49 +442,94 @@ static void draw_time(uint32_t pct, uint32_t cuts)
     }
     if (song.total) { p = put_s(p, " / "); p = put_t(p, song.total); }
     *p = 0;
-    draw_text_box(0, 136, 240, &FONT_L, s, playing ? C_ACC : C_OFF, 1);
-    p = put_s(s, "calcul "); p = put_u(p, pct); p = put_s(p, " %   coupures "); p = put_u(p, cuts); *p = 0;
-    draw_text_box(0, 200, 240, &FONT_S, s, pct < 85u ? C_OFF : C_BAD, 1);
+    draw_text_box(0, 134, 240, &FONT_L, s, playing ? C_ACC : C_OFF, 1);
+    if (msg && (int32_t)(msg_until - fm1_ms) > 0) { draw_text_box(0, 198, 240, &FONT_S, msg, C_ACC, 1); }
+    else {
+        msg = 0;
+        p = put_s(s, "calcul "); p = put_u(p, pct); p = put_s(p, " %   coupures "); p = put_u(p, cuts); *p = 0;
+        draw_text_box(0, 198, 240, &FONT_S, s, pct < 85u ? C_OFF : C_BAD, 1);
+    }
     draw_text_box(0, 220, 240, &FONT_S, ended ? "fin - PLAY : rejouer" : playing ? "PLAY pause  REC debut"
                                                                               : "PLAY lecture  REC debut", C_OFF, 1);
 }
 
-#ifdef DINGHY_HOST                              /* sur PC : ROMSOUNDS_RSM=fichier.rsm joue ce morceau au démarrage */
+static void show_busy(const char *what)          /* un travail long (enregistrer, lire la flash) : le dire d'abord */
+{
+    lcd_fill(0, 130, 240, 110, C_BLACK);
+    draw_text_box(0, 150, 240, &FONT_S, what, C_ACC, 1);
+}
+
+static void open_lib(uint32_t i, uint32_t play)  /* jouer le morceau i de la bibliothèque */
+{
+    if (i >= lib.count) return;
+    playing = 0;
+    show_busy("Chargement...");
+    if (lib_fetch(i)) { loaded = 0; say("morceau illisible"); draw_song(); return; }
+    if (lib.cur != i) { lib.cur = (uint16_t)i; lib_save(); }
+    loaded = 1; song_start(); playing = play; underruns = 0;
+    draw_song();
+}
+
+#ifdef DINGHY_HOST                              /* sur PC : ROMSOUNDS_RSM=a.rsm,b.rsm... : reçus comme depuis la page, un toutes
+                                                 * les 3 s (ROMSOUNDS_EVERY ms), le premier au démarrage */
 static void rs_host_load(void)
 {
-    const char *f = getenv("ROMSOUNDS_RSM");    /* un morceau préparé par la page (tests/rx_test.js) */
-    FILE *fp = f ? fopen(f, "rb") : NULL;
+    static uint32_t k, due;
+    const char *list = getenv("ROMSOUNDS_RSM"), *every = getenv("ROMSOUNDS_EVERY");
+    char f[256];
+    uint32_t i = 0, n = 0;
+    FILE *fp;
+    if (!list || fm1_ms < due || load_req || rx_active) return;
+    while (list[i] && n < k) if (list[i++] == ',') n++;  /* le k-ième nom */
+    if (!list[i] && n < k) return;
+    for (n = 0; list[i] && list[i] != ',' && n < sizeof f - 1u; ) f[n++] = list[i++];
+    f[n] = 0;
+    if (!n) return;
+    k++;
+    due = fm1_ms + (every ? (uint32_t)atoi(every) : 3000u);
+    fp = fopen(f, "rb");
     if (!fp) return;
     rx_size = (uint32_t)fread(vgm_buf, 1, VGM_MAX, fp);
     fclose(fp);
     rx_got = rx_size;
     load_req = 1;
-    strcpy(title, "Test ROMsounds");
-    strcpy(game, "(synthese)");
+    str_copy(title, f, sizeof title);
+    strcpy(game, "(test)");
+    strcpy(sys, "Test");
 }
 #endif
 
 static void app_main(void)
 {
-    uint32_t b, rel, t_shown = 0, sum = 0, cnt = 0, pct = 0, shown_rx = ~0u;
+    uint32_t b, rel, t_shown = 0, sum = 0, cnt = 0, pct = 0, shown_rx = ~0u, rec_t = 0, rec_done = 0;
+    int32_t turn = 0;
+    uint32_t turn_t = 0;
 
     lcd_fill(0, 0, 240, 240, C_BLACK);
     draw_text_box(0, 18, 240, &FONT_L, APP_NAME, C_ACC, 1);
-    draw_text_box(0, 56, 240, &FONT_S, "Mega Drive  v" APP_VER, C_OFF, 1);
-    draw_song();
-#ifdef DINGHY_HOST
-    rs_host_load();
-#endif
+    lib_load();
+    if (lib.count) open_lib(lib.cur, 0);        /* au démarrage : le dernier morceau, prêt (PLAY) */
+    else draw_song();
 
     for (;;) {
         platform_poll();
+#ifdef DINGHY_HOST
+        rs_host_load();
+#endif
 
-        if (load_req) {                          /* morceau reçu : l'ouvrir et répondre à la page */
+        if (load_req) {                          /* morceau reçu : l'ouvrir, le garder, répondre à la page */
             int e;
             load_req = 0;
             e = song_load(rx_size);
             if (e) { loaded = 0; ack_cmd = 0x48 + e; }
-            else { loaded = 1; song_start(); underruns = 0; ack_cmd = 3; }
+            else {
+                if (lib_ok()) {
+                    show_busy("Enregistrement...");
+                    if (lib_store(rx_size, rx_crc32(vgm_buf, rx_size)) < 0) say("pas enregistre (flash)");
+                    else say("enregistre dans le FM-1");
+                }
+                loaded = 1; song_start(); underruns = 0; ack_cmd = 3;
+            }
             draw_song();
             t_shown = 0;
         }
@@ -357,7 +550,34 @@ static void app_main(void)
             else playing = !playing;
             t_shown = 0;
         }
-        if (b & (1u << BTN_REC) && loaded) { uint32_t was = playing; song_start(); playing = was; t_shown = 0; }
+        /* REC : revenir au début ; maintenu 2 s : retirer le morceau de la bibliothèque */
+        if (b & (1u << BTN_REC)) { rec_t = fm1_ms; rec_done = 0; }
+        if (fm1_in.buttons >> BTN_REC & 1u && !rec_done && fm1_ms - rec_t >= 2000u && lib.count) {
+            uint32_t i = lib.cur;
+            rec_done = 1;
+            playing = 0;
+            lib_remove(i);
+            show_busy("Effacement...");
+            lib_save();
+            if (lib.count) open_lib(lib.cur < lib.count ? lib.cur : 0u, 0);
+            else { loaded = 0; draw_song(); }
+            say("morceau retire");
+            t_shown = 0;
+        }
+        if (rel & (1u << BTN_REC) && !rec_done && loaded) { uint32_t was = playing; song_start(); playing = was; t_shown = 0; }
+        /* morceau suivant / précédent : OCT+ / OCT-, ou SELECT (on charge quand on a fini de tourner) */
+        {
+            int32_t e = fm1_enc_take(ENC_SELECT) + (b >> BTN_OCT_UP & 1u) - (b >> BTN_OCT_DOWN & 1u);
+            if (e) { turn += e; turn_t = fm1_ms | 1u; }
+        }
+        if (turn && lib.count > 1u) {
+            if (fm1_ms - turn_t >= 400u) {          /* 0,4 s après le dernier cran */
+                int32_t n = (int32_t)lib.count, i = ((int32_t)lib.cur + turn % n + n) % n;
+                turn = 0; turn_t = 0;
+                open_lib((uint32_t)i, 1);
+                t_shown = 0;
+            }
+        } else if (turn) turn = 0;
         fm1_led_key(BTN_PLAY, playing);
 
         if (rx_active) {                         /* réception : la progression, 4 fois par seconde */

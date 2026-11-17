@@ -3,16 +3,20 @@
 Extracteur de musiques de ROM de vieux jeux (Game Boy, Mega Drive, Super Nintendo…) et firmware lecteur pour le
 synthé M-VAVE FM-1. Fiche du projet : `bananebleue/Clodio`, `projets/extracteur-musiques-rom.md` (ticket #1).
 
-## État : lecteur Mega Drive
+## État : lecteur Mega Drive, Master System, Game Gear
 
-Le firmware ROMsounds joue des musiques Mega Drive au format **VGM** : la page (section « Lecteur Mega Drive ») lit
-un fichier `.vgm` ou `.vgz`, le prépare (banque d'échantillons à part, musique compressée) et l'envoie au FM-1 par
-USB, qui le garde compressé en mémoire vive (268 Ko au plus) et le décompresse en jouant (uzlib).
+Le firmware ROMsounds joue des musiques au format **VGM** : la page (section « Lecteur ») lit un fichier `.vgm` ou
+`.vgz`, le prépare (banque d'échantillons à part, musique compressée, flux DAC convertis) et l'envoie au FM-1 par USB.
+Le FM-1 le joue aussitôt et le **garde en mémoire flash** (bibliothèque d'environ 290 Ko, gardée après extinction).
 
 - YM2612 : le cœur de MAME / Genesis Plus GX 1.5.1 (via libvgm), porté pour le FM-1 ; ~60 % du temps de calcul.
-- SN76489 (PSG) : écrit pour ROMsounds. DAC (samples) : banque PCM et commandes 0x8n / 0xE0.
-- Pas encore : les flux DAC des VGM 1.60 (commandes 0x90-0x95), la mémoire après extinction.
-- PLAY : pause / lecture ; REC : revenir au début.
+- SN76489 (PSG) : écrit pour ROMsounds ; bruit réglable (Sega, TI), stéréo Game Gear. DAC : banque PCM, 0x8n / 0xE0 ;
+  flux DAC des VGM 1.60 (0x90-0x95) rejoués par la page en écritures DAC, comme libvgm.
+- Niveaux et rendu comparés à libvgm (`vgm2wav`) : même enveloppe, mêmes niveaux.
+- Sur le FM-1 : PLAY pause / lecture ; REC revenir au début ; OCT− / OCT+ ou SELECT : morceau précédent / suivant ;
+  REC maintenu 2 s : retirer le morceau de la bibliothèque. Au démarrage, le dernier morceau joué est prêt.
+- Bibliothèque : FM-1 0x97000-0xE0000 (le magasin de données de la famille Felucca / Dinghy) ; installer un autre
+  firmware peut l'effacer (le FM-1 le voit et repart d'une bibliothèque vide).
 
 | | |
 | --- | --- |

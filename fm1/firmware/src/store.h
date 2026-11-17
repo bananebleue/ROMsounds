@@ -41,7 +41,7 @@
 #define SLOTS_AT 0x00097000u                    /* (Felucca's main store, FL_DATA) */
 #define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, SETTINGS_AT, SETTINGS_AT + 0x1000u) || \
                              FL_IN(off, n, BLOBS_AT, BLOBS_AT + NBLOB * 0x1000u) || \
-                             FL_IN(off, n, SLOTS_AT, SLOTS_AT + NSLOT * SLOT_SECT * 0x1000u))
+                             FL_IN(off, n, SLOTS_AT, 0x000E0000u))   /* ROMsounds : tout FL_DATA (bibliothèque) */
 #endif
 #include "fm1_flash_map.h"
 #define SECTOR_MAX (4096u - 12u)                /* settings, a blob: the sector minus the header */
