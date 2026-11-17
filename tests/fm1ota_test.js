@@ -4,7 +4,7 @@
 //   node tests/fm1ota_test.js
 'use strict';
 const O = require('../web/fm1ota.js');
-Object.assign(O.DELAY, { open: 0, start: 10, reply: 0, loader: 10, reboot: 10, retry: 20, poll: 50, hs: 100,
+Object.assign(O.DELAY, { port: 200, open: 0, start: 10, reply: 0, loader: 10, reboot: 10, retry: 20, poll: 50, hs: 100,
   idle_check: 400, idle_write: 400, wait_loader: 2000, wait_reboot: 2000 });
 
 let failed = 0;
@@ -175,6 +175,22 @@ async function main() {
   ok(await install(dev, raw) === 'FM-1_960', 'port au nom inconnu (« FIELD ») : trouvé et installé');
   const hs = O.HS_QUERY.join();
   ok(dev.foreignSent.every(d => d.join() === hs), 'l’autre appareil MIDI ne reçoit que la demande d’identité');
+
+  // Windows : un port qui ne s'ouvre jamais (tenu par un autre logiciel) ne doit pas figer la page
+  {
+    const d = new FakeFM1(img, { identity: 'FM-1_13010300', name: 'FIELD' });
+    const other = [...d.access.inputs.values()].find(p => p.name === 'Clavier Arturia');
+    other.open = () => new Promise(() => {});            // jamais résolu
+    const t = Date.now(), dv = await new O.Updater(d.access).find();
+    ok(dv && dv.id.text === 'FM-1_13010300' && Date.now() - t < 2000, 'port qui ne s’ouvre jamais : ignoré, FM-1 trouvé quand même');
+    if (dv) dv.link.close();
+  }
+  {
+    const d = new FakeFM1(img);
+    d.in.open = () => new Promise(() => {});
+    const dv = await new O.Updater(d.access).find();
+    ok(dv === null, 'port du FM-1 bloqué : find() rend null au lieu de rester figé');
+  }
 
   const d0 = new FakeFM1(img); d0.unplug();
   ok(await new O.Updater(d0.access).find() === null, 'aucun FM-1 : find() rend null');

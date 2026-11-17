@@ -18,7 +18,7 @@ const OWN_LOADER_RE = /^ota-(FM-1|SMK-37 Pro|SMK-37 Elite|MKE-P37)_9\d\d$/i;
 const SMK_FAMILY = /^(SMK-37[ +].*|MKE-P37|STARRYKEY-37.*)$/i;
 
 // millisecondes ; les tests les raccourcissent
-const DELAY = { open: 600, start: 2000, reply: 10, loader: 3000, reboot: 3000, retry: 1000,
+const DELAY = { port: 5000, open: 600, start: 2000, reply: 10, loader: 3000, reboot: 3000, retry: 1000,
                 poll: 1000, hs: 1000, idle_check: 8000, idle_write: 180000,
                 wait_loader: 30000, wait_reboot: 40000 };
 
@@ -208,7 +208,18 @@ class Link {
     input.addEventListener('midimessage', this.handler);
   }
   async open() {
-    await Promise.all([this.input.open(), this.output.open()]);
+    // Sous Windows, ouvrir un port MIDI peut ne jamais aboutir (port tenu par un autre logiciel, ou en cours de
+    // réénumération) : sans délai maximal, la page resterait figée. Comme l'installateur de fm1_open : 5 s au plus,
+    // et un port qui s'ouvre trop tard est refermé.
+    let late = false, timer;
+    const ops = Promise.all([this.input.open(), this.output.open()]);
+    ops.then(() => { if (late) this.close(); }, () => {});
+    try {
+      await Promise.race([ops, new Promise((_, rej) => { timer = setTimeout(() => {
+        late = true; rej(new InstallError('porttimeout', 'le port MIDI « ' + (this.input.name || '?') + ' » ne s’ouvre pas : '
+          + 'ferme les autres logiciels ou onglets qui utilisent le FM-1, puis débranche et rebranche-le.'));
+      }, DELAY.port); })]);
+    } finally { clearTimeout(timer); }
     await wait(DELAY.open);       // Android et CoreMIDI perdent ce qui part juste après l'ouverture
   }
   get lost() {
@@ -229,8 +240,9 @@ class Link {
   drain() { this.q.length = 0; }
   close() {
     this.input.removeEventListener('midimessage', this.handler);
-    try { this.input.close(); } catch (e) { /* déjà fermé */ }
-    try { this.output.close(); } catch (e) { /* déjà fermé */ }
+    // close() rend une promesse : un refus (port déjà parti) ne doit pas remonter, et on ne l'attend pas
+    try { Promise.resolve(this.input.close()).catch(() => {}); } catch (e) { /* déjà fermé */ }
+    try { Promise.resolve(this.output.close()).catch(() => {}); } catch (e) { /* déjà fermé */ }
   }
 }
 
