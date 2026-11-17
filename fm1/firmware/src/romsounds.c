@@ -229,10 +229,12 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
 /* ---- réception depuis la page (appelé par platform_poll) */
 static uint32_t rx_size, rx_got, rx_active, load_req;
 static volatile int32_t ack_cmd = -1, ack_seq = -1;
+static volatile uint32_t stat_req;              /* la page demande la place de la bibliothèque (SysEx 04) */
 
 static void app_sysex(const uint8_t *p, uint32_t n)
 {
     if (n < 4u || p[1] != 0x52u || p[2] != 0x53u) return;
+    if (p[3] == 4u) { stat_req = 1; return; }   /* place : CC 119 morceaux, CC 120 secteurs pris, CC 121 secteurs en tout */
     if (p[3] == 1u && n >= 9u) {                /* début */
         uint32_t i = 9, t = 0, size = rd35(p + 4);
         if (!size || size > VGM_MAX) { ack_cmd = 0x41; return; }
@@ -278,6 +280,7 @@ static void app_sysex(const uint8_t *p, uint32_t n)
 #endif
 #define LIB_NS ((LIB_HI - LIB_LO) / 0x1000u)  /* secteurs */
 #define LIB_MAX 40u
+_Static_assert(LIB_NS < 128u && LIB_MAX < 128u, "la place se dit en CC : 0..127");
 #define LIB_MAGIC 0x3142494Cu                  /* "LIB1" */
 typedef struct {
     uint16_t sect, nsect;
@@ -593,13 +596,20 @@ static void app_main(void)
                     else if (lib_dropped) say("plein : des anciens retires");
                     else say("enregistre dans le FM-1");
                 }
-                loaded = 1; song_start(); underruns = 0; ack_cmd = 3;
+                loaded = 1; song_start(); underruns = 0; ack_cmd = 3; stat_req = 1;
             }
             draw_song();
             t_shown = 0;
         }
         if (ack_cmd >= 0) { midi_send(0xBFu, 117u, (uint32_t)ack_cmd); ack_cmd = -1; }
         if (ack_seq >= 0) { midi_send(0xBFu, 118u, (uint32_t)ack_seq); ack_seq = -1; }
+        if (stat_req && ack_cmd < 0) {          /* après l'accusé de fin : la page lit la place juste après */
+            uint32_t ok = lib_ok() ? 1u : 0u;
+            stat_req = 0;
+            midi_send(0xBFu, 119u, ok ? lib.count : 0u);
+            midi_send(0xBFu, 120u, ok ? LIB_NS - lib_free_sect() : 0u);
+            midi_send(0xBFu, 121u, ok ? LIB_NS : 0u);   /* 0 : pas de bibliothèque (pas de flash) */
+        }
 
         if (RING - (ring_w - ring_r) >= BLOCK) {  /* calcul : un bloc dès qu'il y a la place, mesuré */
             uint32_t t0 = fm1_ticks(), us, was = playing;
@@ -626,7 +636,7 @@ static void app_main(void)
             lib_save();
             if (lib.count) open_lib(lib.cur < lib.count ? lib.cur : 0u, 0);
             else { loaded = 0; draw_song(); }
-            say("morceau retire");
+            say("morceau retire"); stat_req = 1;
             t_shown = 0;
         }
         if (rel & (1u << BTN_REC) && !rec_done && loaded) { uint32_t was = playing; song_start(); playing = was; t_shown = 0; }

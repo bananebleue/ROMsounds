@@ -89,7 +89,9 @@ jobs:
           node ../tests/zip_test.js build/pack.zip "build/pack/01 Test.vgm" "build/pack/02 NES.vgz" "build/pack/Pack/10 Game Boy.vgm"
           # bibliothèque à tasser : B (40 Ko) retiré entre A et C, D (80 Ko) n'entre qu'une fois C descendu ; C relu et joué
           for x in A:100 B:40 C:101 D:80; do node ../tests/big_rsm.js build/test.rsm build/${x%%:*}.rsm ${x##*:}; done
-          ROMSOUNDS_RSM=build/A.rsm,build/B.rsm,build/C.rsm,build/D.rsm ROMSOUNDS_EVERY=5000 sh tests/run_host.sh tests/scripts/tassement.txt
+          ROMSOUNDS_RSM=build/A.rsm,build/B.rsm,build/C.rsm,build/D.rsm ROMSOUNDS_EVERY=5000 sh tests/run_host.sh tests/scripts/tassement.txt | tee build/tasse.log
+          # la place annoncée à la page après D : 3 morceaux, 25 + 26 + 20 secteurs de 4 Ko sur 73
+          grep -q "BF 119 3" build/tasse.log && grep -q "BF 120 71" build/tasse.log && grep -q "BF 121 73" build/tasse.log
           node ../tests/wav_check.js build/host/romsounds.wav 16.6-18.2:5000
 
       - name: Chaîne JieLi (pkgman.jieliapp.com)

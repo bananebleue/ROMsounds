@@ -48,6 +48,10 @@
       <span class="state grow"><span class="dot" id="dot"></span><span id="state">Non détecté</span></span>
       <button class="ghost" id="detect">Détecter le FM-1</button>
     </div>
+    <div id="libRow" hidden style="margin-top:10px">
+      <progress id="libBar" max="1" value="0" style="width:100%"></progress>
+      <p class="sub" id="libText" style="margin:4px 0 0"></p>
+    </div>
   </section>
 
   <section>
@@ -175,6 +179,31 @@ let portsKey = '', detecting = false, detectAgain = false;
 const plugged = () => access ? [...access.inputs.values(), ...access.outputs.values()]
   .filter(p => p.state === 'connected').map(p => p.id).sort().join('|') : '';
 
+/* place de la bibliothèque de ROMsounds : SysEx 04 -> CC 119 (morceaux), 120 (secteurs pris), 121 (secteurs en tout, 4 Ko) */
+const isRs = id => !id.loader && /^FM-1_95\d$/.test(id.text);
+async function queryLib(dev) {
+  const got = {};
+  let done;
+  const wait = new Promise(r => { done = r; });
+  const on = m => { const d = m.data; if (d.length === 3 && d[0] === 0xBF && d[1] >= 119 && d[1] <= 121) { got[d[1]] = d[2]; if (d[1] === 121) done(); } };
+  dev.link.input.addEventListener('midimessage', on);
+  try {
+    if (!dev.link.send([0xF0, 0x7D, 0x52, 0x53, 0x04, 0xF7])) return null;
+    await Promise.race([wait, new Promise(r => setTimeout(r, 1500))]);
+  } finally { dev.link.input.removeEventListener('midimessage', on); }
+  return got[121] === undefined ? null : { count: got[119] || 0, used: got[120] || 0, total: got[121] };
+}
+function showLib(st) {
+  const row = $('libRow');
+  if (!st) { row.hidden = true; return; }
+  row.hidden = false;
+  if (!st.total) { $('libBar').value = 0; $('libText').textContent = 'Bibliothèque indisponible (mémoire flash non reconnue) : les morceaux sont joués sans être gardés.'; return; }
+  $('libBar').max = st.total; $('libBar').value = st.used;
+  const n = st.count;
+  $('libText').textContent = 'Bibliothèque : ' + (n ? n + ' morceau' + (n > 1 ? 'x' : '') : 'vide') + ' · ' + st.used * 4 + ' Ko utilisés · '
+    + (st.total - st.used) * 4 + ' Ko libres sur ' + st.total * 4 + ' Ko';
+}
+
 async function detect() {
   if (busy) return;
   if (detecting) { detectAgain = true; return; }
@@ -183,7 +212,8 @@ async function detect() {
     const up = new FM1OTA.Updater(await midi());
     if (!$('dot').classList.contains('on')) setState('Recherche…', 'busy');
     const dev = await up.find();
-    if (!dev) { setState('Non détecté (ports vus : ' + ([...access.inputs.values()].filter(p => p.state === 'connected').map(p => p.name).join(', ') || 'aucun') + ')'); return; }
+    if (!dev) { showLib(null); setState('Non détecté (ports vus : ' + ([...access.inputs.values()].filter(p => p.state === 'connected').map(p => p.name).join(', ') || 'aucun') + ')'); return; }
+    try { showLib(isRs(dev.id) ? await queryLib(dev) : null); } catch (e) { showLib(null); }
     dev.link.close();
     setState(dev.id.loader ? 'En mode mise à jour (' + dev.id.text + ') : relance l’installation pour la terminer' : label(dev.id.text), 'on');
     if (expected && !dev.id.loader) {
@@ -376,6 +406,7 @@ async function sendVgm() {
     send(fr.end);
     log('Envoyé : le FM-1 enregistre le morceau dans sa mémoire…');
     if (await waitAck(117, v => v === 3, 30000) === null) throw new Error('le FM-1 n’a pas confirmé la fin de l’envoi');
+    try { showLib(await queryLib(dev)); } catch (e) { /* (la place reste celle d'avant) */ }
     log('Envoyé en ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s : le FM-1 joue « ' + (vgm.title || 'le morceau') + ' » et l’a gardé en mémoire.\nPLAY : pause / lecture · REC : revenir au début · OCT− / OCT+ : morceau précédent / suivant.');
   } catch (e) {
     log('Échec : ' + (e.message || e));
