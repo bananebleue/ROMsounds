@@ -333,7 +333,9 @@ async function sendVgm() {
     const fr = vgmFrames(vgm.blob, vgm.title, vgm.game, FM1OTA.pack7);
     acks.length = 0;
     send(fr.begin);
-    if (await waitAck(117, v => v === 1, 2000) === null) throw new Error('le FM-1 ne répond pas au début de l’envoi');
+    const hello = await waitAck(117, v => v === 1 || v === 2, 2000);
+    if (hello === null) throw new Error('le FM-1 ne répond pas au début de l’envoi');
+    if (hello === 1) throw new Error('ROMsounds sur le FM-1 est une ancienne version, qui ne lit pas ce format : réinstalle ROMsounds (section « Installer un firmware »), puis renvoie le morceau.');
     const n = fr.data.length, t0 = Date.now();
     for (let seq = 0; seq < n; seq++) {
       const frame = fr.data[seq];

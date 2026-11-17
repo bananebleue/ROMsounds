@@ -17,7 +17,8 @@
  *   F0 7D 52 53 03 <CRC-32 : 5 x 7 bits> F7                                    fin : vérifier, jouer
  * Le contenu (« RSM1 ») : en-tête de 40 octets, banque PCM brute, commandes avant la boucle (A) et depuis la boucle (B),
  * en deflate brut. À la fin de B, on reprend B : une boucle sans retour en arrière.
- * Le FM-1 répond à chacun par un contrôleur sur le canal 16 : CC 117 = 1 / 3 (début / fin acceptés), 0x40 + code
+ * Le FM-1 répond à chacun par un contrôleur sur le canal 16 : CC 117 = 2 / 3 (début / fin acceptés ; au début, 2 dit
+ * « format RSM1 », l'ancienne version répondait 1), 0x40 + code
  * (refus) ; CC 118 = n° & 127 (données reçues). La page attend la réponse avant d'envoyer la suite.
  *
  * Le calcul se fait dans la boucle principale (pas dans l'interruption audio) : un tampon circulaire entre les deux.
@@ -183,8 +184,8 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
         mbuf_n = k;
         for (j = 0; j < n; j++) {
             ym_pos += ym_step; kk += ym_pos >> 16; ym_pos &= 0xFFFFu;
-            mix[2u * (o + j)] += mbuf_l[kk] >> 1;   /* 6 voies jusqu'à ±8191 chacune : / 2 */
-            mix[2u * (o + j) + 1u] += mbuf_r[kk] >> 1;
+            mix[2u * (o + j)] += mbuf_l[kk] << 1;   /* niveaux de libvgm (vgm2wav) : FM x 2, PSG : psg.h */
+            mix[2u * (o + j) + 1u] += mbuf_r[kk] << 1;
         }
         psg_render(&psg, mix + 2u * o, n);
         wait -= n; left -= n; o += n; played += n;
@@ -215,7 +216,7 @@ static void app_sysex(const uint8_t *p, uint32_t n)
         i++; t = 0;
         while (i < n && p[i] && t < sizeof game - 1u) game[t++] = (char)p[i++];
         game[t] = 0;
-        ack_cmd = 1;
+        ack_cmd = 2;                            /* 2 : ce firmware attend un RSM1 (1 : l'ancien, un VGM brut) */
     } else if (p[3] == 2u && n >= 6u) {         /* données */
         uint32_t seq = (uint32_t)p[4] | (uint32_t)p[5] << 7, off = seq * 512u, want, got;
         if (!rx_active || off >= rx_size) { ack_cmd = 0x42; return; }

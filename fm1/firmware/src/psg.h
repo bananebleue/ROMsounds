@@ -23,8 +23,9 @@ typedef struct {
     uint16_t lfsr;
 } psg_t;
 
-/* 2 dB par pas, voie au maximum : 2800 (4 voies au maximum : ~ -9 dB sous la pleine échelle Q15) */
-static const uint16_t PSG_VOL[16] = {2800, 2224, 1767, 1403, 1115, 885, 703, 559, 444, 352, 280, 222, 177, 140, 111, 0};
+/* 2 dB par pas ; voie au maximum : 4032, le niveau du PSG face au YM2612 dans libvgm (vgm2wav), mesuré sur des pistes
+ * Mega Drive (17/11/2026) */
+static const uint16_t PSG_VOL[16] = {4032, 3203, 2544, 2021, 1605, 1275, 1013, 805, 639, 508, 403, 320, 254, 202, 160, 0};
 
 static void psg_init(psg_t *p, uint32_t clock)
 {
