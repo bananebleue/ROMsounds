@@ -90,15 +90,16 @@ const OFFICIAL = {
   'd017fb65e70aca97ee29d944470c3515a74581df5c0576bf70de917c7b2b61d5': { v: 'V16', product: 'FM-1_016' },
   'db1642b2b6fa5c2cccb11ffd13878068bb28601678d3644049f99dc40e7edb8a': { v: 'V15', product: 'FM-1_015' }
 };
+FM1OTA.DELAY.wait_reboot = 60000;           // Windows (Edge, Chrome) revoit le FM-1 plus lentement qu'Android
 const NAMES = [
   [/^FM-1_95\d$/, 'ROMsounds'], [/^FM-1_99\d$/, 'Dinghy'],
-  [/^FM-1_91\d$/, 'Felucca'], [/^FM-1_900$/, 'SLOOP'], [/^FM-1_93\d$/, 'sloopDX'], [/^FM-1_0\d\d$/, 'firmware officiel M-VAVE']
+  [/^FM-1_91\d$/, 'Felucca'], [/^FM-1_900$/, 'SLOOP'], [/^FM-1_93\d$/, 'sloopDX'], [/^FM-1_0\d\d$/, 'firmware officiel M-VAVE'], [/^FM-1_8\d{6}$/, 'FM1 Open (firmware officiel ouvert)']
 ];
 const nameOf = id => { for (const [re, n] of NAMES) if (re.test(id)) return n; return 'firmware inconnu'; };
 const label = id => id + ' · ' + nameOf(id);
 
 const log = $('log'), bar = $('bar'), okBox = $('okBox'), file = $('file');
-let busy = false, access = null, filePkg = null;
+let busy = false, access = null, filePkg = null, expected = null;
 const write = t => { log.textContent = t; };
 const kb = n => Math.round(n / 1024) + ' Ko';
 const hex = async raw => [...new Uint8Array(await crypto.subtle.digest('SHA-256', raw))].map(x => x.toString(16).padStart(2, '0')).join('');
@@ -159,6 +160,11 @@ async function detect() {
     if (!dev) { setState('Non détecté (ports vus : ' + ([...access.inputs.values()].filter(p => p.state === 'connected').map(p => p.name).join(', ') || 'aucun') + ')'); return; }
     dev.link.close();
     setState(dev.id.loader ? 'En mode mise à jour (' + dev.id.text + ') : relance l’installation pour la terminer' : label(dev.id.text), 'on');
+    if (expected && !dev.id.loader) {
+      write(log.textContent + '\n' + (dev.id.text === expected ? 'Confirmé : le FM-1 répond ' + label(dev.id.text) + '.'
+        : 'Attention : le FM-1 répond ' + label(dev.id.text) + ' (attendu : ' + expected + ').'));
+      expected = null;
+    }
   } catch (e) { setState(e.message || String(e)); }
   finally {
     portsKey = plugged();               // les ouvertures/fermetures de cette détection ne comptent pas
@@ -185,6 +191,7 @@ async function install(getPkg) {
   window.addEventListener('beforeunload', guard);
   let head = '';
   const t0 = Date.now();
+  expected = null;
   try {
     const p = await getPkg(write);
     head = p.text + '\n\n';
@@ -201,11 +208,17 @@ async function install(getPkg) {
       if (k === 'start') { lines.push('1/3 Vérification du paquet par le firmware en place…'); show(); }
       else if (k === 'check') show('lectures : ' + a);
       else if (k === 'loader') { lines.push('Passage en mode mise à jour (le port USB change de nom)…'); show(); }
+      else if (k === 'reboot') { expected = p.pkg.product; lines.push('3/3 Redémarrage du FM-1…'); show(); }
       else if (k === 'write') { if (bar.hidden) { lines.push('2/3 Écriture — ne débranche rien.'); bar.hidden = false; } bar.value = a; show('écriture : ' + a + ' %'); }
-      else if (k === 'reboot') { lines.push('3/3 Redémarrage du FM-1…'); show(); }
-      else if (k === 'done') { lines.push('Terminé : le FM-1 répond ' + label(a) + ' (' + Math.round((Date.now() - t0) / 1000) + ' s).'); show(); }
+      else if (k === 'done') { expected = null; lines.push('Terminé : le FM-1 répond ' + label(a) + ' (' + Math.round((Date.now() - t0) / 1000) + ' s).'); show(); }
     });
   } catch (e) {
+    if (e instanceof FM1OTA.InstallError && e.code === 'noreturn' && expected) {
+      // L'écriture est finie : seul le retour automatique a manqué (fréquent sous Windows, ou depuis FM1 Open)
+      write(log.textContent + '\n\nÉcriture terminée, mais le FM-1 n’a pas réapparu tout seul. Éteins-le et rallume-le : '
+        + 'la page confirmera ici le firmware dès qu’il revient.');
+      return;
+    }
     const msg = e instanceof FM1OTA.InstallError ? e.message : 'erreur inattendue (' + (e && e.message ? e.message : e) + ')';
     write(log.textContent + '\n\nÉchec : ' + msg + '\nSi le FM-1 ne démarre plus : maintiens OCT− en l’allumant (secours USB des firmwares Felucca et Dinghy), puis réinstalle.');
   } finally {
