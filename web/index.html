@@ -51,8 +51,8 @@
   </section>
 
   <section>
-    <h2>Lecteur Mega Drive · Master System · Game Gear</h2>
-    <p class="sub" style="margin:0 0 10px">Avec ROMsounds sur le FM-1 : choisis un fichier VGM (ou VGZ) de musique Mega Drive, Master System ou Game Gear, puis envoie-le. Le FM-1 le joue aussitôt et le garde en mémoire, même éteint (environ 290 Ko pour la bibliothèque ; les plus anciens laissent la place). Sur le FM-1 : OCT− / OCT+ ou SELECT pour changer de morceau, REC maintenu 2 s pour en retirer un.</p>
+    <h2>Lecteur Mega Drive · Master System · Game Gear · Game Boy · NES</h2>
+    <p class="sub" style="margin:0 0 10px">Avec ROMsounds sur le FM-1 : choisis un fichier VGM (ou VGZ) de musique Mega Drive, Master System, Game Gear, Game Boy ou NES, puis envoie-le. Le FM-1 le joue aussitôt et le garde en mémoire, même éteint (environ 290 Ko pour la bibliothèque ; les plus anciens laissent la place). Sur le FM-1 : OCT− / OCT+ ou SELECT pour changer de morceau, REC maintenu 2 s pour en retirer un.</p>
     <div class="row">
       <input type="file" id="vgmFile" accept=".vgm,.vgz" class="grow">
       <button id="vgmSend" disabled>Envoyer au FM-1</button>
@@ -290,7 +290,7 @@ $('vgmFile').addEventListener('change', async () => {
   try {
     const v = await readVgm(f);
     const lines = [(v.title || f.name) + (v.game ? ' — ' + v.game : ''), (v.system ? v.system + ' · ' : '') + (v.author || '')];
-    lines.push('Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489'].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
+    lines.push('Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489', v.gb && 'Game Boy', v.nes && 'NES 2A03'].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
     lines.push('Durée : ' + mmss(v.total / 44100) + (v.loop ? ' (boucle de ' + mmss(v.loop / 44100) + ')' : ''));
     lines.push('Pour le FM-1 : ' + kb(v.blob.length) + ' (fichier ouvert : ' + kb(v.raw) + ' ; échantillons ' + kb(v.pcmLen) + ', musique compressée ' + kb(v.aLen + v.bLen) + ')');
     if (v.dacStream) lines.push('Flux DAC (VGM 1.60) : convertis par la page pour le FM-1.');
@@ -333,9 +333,9 @@ async function sendVgm() {
     const fr = vgmFrames(vgm.blob, vgm.title, vgm.game, FM1OTA.pack7, vgm.sys);
     acks.length = 0;
     send(fr.begin);
-    const hello = await waitAck(117, v => v === 1 || v === 2, 2000);
+    const hello = await waitAck(117, v => v === 1 || v === 2 || v === 4, 2000);
     if (hello === null) throw new Error('le FM-1 ne répond pas au début de l’envoi');
-    if (hello === 1) throw new Error('ROMsounds sur le FM-1 est une ancienne version, qui ne lit pas ce format : réinstalle ROMsounds (section « Installer un firmware »), puis renvoie le morceau.');
+    if (hello !== 4) throw new Error('ROMsounds sur le FM-1 est une ancienne version, qui ne lit pas ce format : réinstalle ROMsounds (section « Installer un firmware »), puis renvoie le morceau.');
     const n = fr.data.length, t0 = Date.now();
     for (let seq = 0; seq < n; seq++) {
       const frame = fr.data[seq];

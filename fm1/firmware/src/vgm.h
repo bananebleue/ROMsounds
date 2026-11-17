@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* ROMsounds : lecture des commandes d'un fichier VGM (https://vgmrips.net/wiki/VGM_Specification) pour la Mega Drive :
- * YM2612 (FM + DAC) et SN76489 (PSG) ; la Master System et la Game Gear (SN76489 seul, stéréo 0x4F). La page (web/romsounds.js) a déjà retiré l'en-tête, les étiquettes, les blocs de
+ * YM2612 (FM + DAC) et SN76489 (PSG) ; la Master System et la Game Gear (SN76489 seul, stéréo 0x4F) ; la Game Boy
+ * (0xB3) et la NES (0xB4). La page (web/romsounds.js) a déjà retiré l'en-tête, les étiquettes, les blocs de
  * données (la banque PCM arrive à part) et les commandes des autres puces ; les commandes arrivent une à une, par
  * vgm_get() (décompression au fil de l'eau dans l'app).
  *
@@ -21,6 +22,7 @@ typedef struct {
     uint32_t pcm_len, pcm_pos;
     uint32_t warn;
     uint32_t psg_cfg;                   /* bruit du SN76489 : rebouclage | largeur << 16 (0 : Sega) */
+    uint32_t gb_clock, nes_clock;
 } vgm_t;
 
 static int vgm_get(void);
@@ -28,6 +30,8 @@ static int vgm_restart(void);
 static void vgm_ym(uint32_t port, uint32_t reg, uint32_t val);
 static void vgm_psg(uint32_t val);
 static void vgm_psg_stereo(uint32_t val);
+static void vgm_gb(uint32_t reg, uint32_t val);
+static void vgm_nes(uint32_t reg, uint32_t val);
 
 static uint32_t vgm_next(vgm_t *v)
 {
@@ -39,6 +43,11 @@ static uint32_t vgm_next(vgm_t *v)
         }
         if (c == 0x50) { if ((a = vgm_get()) >= 0) vgm_psg((uint32_t)a); continue; }
         if (c == 0x4F) { if ((a = vgm_get()) >= 0) vgm_psg_stereo((uint32_t)a); continue; }   /* Game Gear */
+        if (c == 0xB3 || c == 0xB4) {          /* Game Boy (0xFF10 + reg), NES ($4000 + reg) */
+            a = vgm_get(); b = vgm_get();
+            if (b >= 0 && !(a & 0x80)) { if (c == 0xB3) vgm_gb((uint32_t)a, (uint32_t)b); else vgm_nes((uint32_t)a, (uint32_t)b); }
+            continue;
+        }
         if (c == 0x52 || c == 0x53) {
             a = vgm_get(); b = vgm_get();
             if (b >= 0) vgm_ym((uint32_t)c - 0x52u, (uint32_t)a, (uint32_t)b);

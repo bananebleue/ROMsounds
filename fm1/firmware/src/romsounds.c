@@ -3,8 +3,8 @@
  *
  *   YM2612   fmopn.c (MAME / Genesis Plus GX 1.5.1 via libvgm, GPL-2.0-or-later, firmware/ext/fmopn), compilé à part en
  *            -O2 ; ~60 % du temps disponible sur le FM-1 (mesuré le 17/11/2026, 6 voies)
- *   SN76489  psg.h (ROMsounds)
- *   VGM      vgm.h (ROMsounds) : YM2612 + DAC (banque PCM, commandes 0x8n / 0xE0) + PSG, boucle
+ *   SN76489  psg.h (ROMsounds) ; Game Boy : gb_apu.h ; NES : nes_apu.h (ROMsounds, d'après les documentations publiques)
+ *   VGM      vgm.h (ROMsounds) : YM2612 + DAC (banque PCM, commandes 0x8n / 0xE0) + PSG + Game Boy + NES, boucle
  *   inflate  uzlib (zlib, firmware/ext/uzlib) : les commandes restent compressées en mémoire, décompressées en jouant
  *
  *   PLAY     lecture / pause (à la fin : recommence)
@@ -15,10 +15,11 @@
  *   F0 7D 52 53 01 <taille : 5 x 7 bits> <titre ASCII> 00 <jeu ASCII> F7      début
  *   F0 7D 52 53 02 <n° : 2 x 7 bits> <512 octets, empaquetés 8 -> 7 bits> F7  données (à n° x 512)
  *   F0 7D 52 53 03 <CRC-32 : 5 x 7 bits> F7                                    fin : vérifier, jouer
- * Le contenu (« RSM1 ») : en-tête de 40 octets, banque PCM brute, commandes avant la boucle (A) et depuis la boucle (B),
+ * Le contenu (« RSM2 ») : en-tête de 48 octets (« RSM1 » : 40, sans les horloges Game Boy et NES), banque PCM brute
+ * (pour la NES : l'image de sa mémoire $8000-$FFFF, que lit le DMC), commandes avant la boucle (A) et depuis la boucle (B),
  * en deflate brut. À la fin de B, on reprend B : une boucle sans retour en arrière.
- * Le FM-1 répond à chacun par un contrôleur sur le canal 16 : CC 117 = 2 / 3 (début / fin acceptés ; au début, 2 dit
- * « format RSM1 », l'ancienne version répondait 1), 0x40 + code
+ * Le FM-1 répond à chacun par un contrôleur sur le canal 16 : CC 117 = 4 / 3 (début / fin acceptés ; au début, 4 dit
+ * « format RSM2 », les versions d'avant répondaient 2 (RSM1) ou 1), 0x40 + code
  * (refus) ; CC 118 = n° & 127 (données reçues). La page attend la réponse avant d'envoyer la suite.
  *
  * Le calcul se fait dans la boucle principale (pas dans l'interruption audio) : un tampon circulaire entre les deux.
@@ -32,6 +33,8 @@ static void app_sysex(const uint8_t *p, uint32_t n);
 #include "platform.c"
 #include "../ext/fmopn/fmopn.h"                 /* compilé à part, en -O2 (tools/build.py, tests/run_host.sh) */
 #include "psg.h"
+#include "gb_apu.h"
+#include "nes_apu.h"
 #include "vgm.h"
 #include "rx.h"
 #include "../ext/uzlib/uzlib.h"                 /* compilé à part, en -O2 */
@@ -79,6 +82,8 @@ static char title[32], game[32], sys[24];
 static uint32_t loaded, ended, wait, played;    /* played : trames jouées (44,1 kHz) */
 static void *ym;
 static psg_t psg;
+static gb_t gb;
+static nes_t nes;
 
 static void vgm_ym(uint32_t port, uint32_t reg, uint32_t val)
 {
@@ -87,6 +92,8 @@ static void vgm_ym(uint32_t port, uint32_t reg, uint32_t val)
 }
 static void vgm_psg(uint32_t val) { psg_write(&psg, val); }
 static void vgm_psg_stereo(uint32_t val) { psg_stereo(&psg, val); }
+static void vgm_gb(uint32_t reg, uint32_t val) { gb_write(&gb, reg, val); }
+static void vgm_nes(uint32_t reg, uint32_t val) { nes_write(&nes, reg, val); }
 
 static void part_open(uint32_t which)           /* 0 : A (avant la boucle), 1 : B (la boucle) */
 {
@@ -133,17 +140,22 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
 {
     const uint8_t *m = vgm_buf;
     uint32_t pcm, a, b;
-    if (size < 40u || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || m[3] != '1') return 4;
+    uint32_t hl;
+    if (size < 40u || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] != '1' && m[3] != '2')) return 4;
+    hl = m[3] == '1' ? 40u : 48u;              /* RSM1 (avant la Game Boy et la NES) : 40 octets */
+    if (size < hl) return 4;
     pcm = rd32(m + 20); a = rd32(m + 24); b = rd32(m + 28);
-    if (40u + pcm + a + b != size || !a) return 4;
+    if (hl + pcm + a + b != size || !a) return 4;
     song.ym_clock = rd32(m + 4); song.psg_clock = rd32(m + 8);
     song.total = rd32(m + 12); song.loop_samples = rd32(m + 16);
     song.warn = rd32(m + 32);
     song.psg_cfg = rd32(m + 36);
-    song.pcm = m + 40; song.pcm_len = pcm;
-    part_a = m + 40 + pcm; len_a = a;
+    song.gb_clock = hl > 40u ? rd32(m + 40) : 0u;
+    song.nes_clock = hl > 40u ? rd32(m + 44) : 0u;
+    song.pcm = m + hl; song.pcm_len = pcm;
+    part_a = m + hl + pcm; len_a = a;
     part_b = part_a + a; len_b = b;
-    if (!song.ym_clock && !song.psg_clock) return 3;
+    if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock) return 3;
     return 0;
 }
 
@@ -160,6 +172,8 @@ static void song_start(void)
     ym = ym2612_init(NULL, yc, rate, NULL, NULL);
     ym2612_reset_chip(ym);
     psg_init(&psg, song.psg_clock ? song.psg_clock : 3579545u, song.psg_cfg & 0xFFFFu, song.psg_cfg >> 16 & 0xFFu);
+    gb_init(&gb, song.gb_clock);
+    nes_init(&nes, song.nes_clock, !song.ym_clock && song.pcm_len >= 0x8000u ? song.pcm : 0);   /* (NES : sa mémoire) */
     ym_step = (rate << 16) / 44100u;            /* (rate < 65536 : pas de débordement) */
     ym_pos = 0; mbuf_n = 0; mbuf_l[0] = mbuf_r[0] = 0;
     song.pcm_pos = 0;
@@ -181,21 +195,27 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
         part_waited = 1;
         n = wait < left ? wait : left;
         for (j = 0; j < n; j++) { p += ym_step; k += p >> 16; p &= 0xFFFFu; }
-        if (!song.ym_clock) {                    /* Master System, Game Gear : pas de YM2612, pas de calcul */
-            psg_render(&psg, mix + 2u * o, n);
-            for (j = 0; j < 2u * n; j++) mix[2u * o + j] <<= 1;   /* PSG seul : x 2, comme libvgm (mesuré) */
-            wait -= n; left -= n; o += n; played += n;
-            continue;
+        if (song.ym_clock) {
+            mbuf_l[0] = mbuf_l[mbuf_n]; mbuf_r[0] = mbuf_r[mbuf_n];
+            if (k) ym2612_update_one(ym, k, b);
+            mbuf_n = k;
+            for (j = 0; j < n; j++) {
+                ym_pos += ym_step; kk += ym_pos >> 16; ym_pos &= 0xFFFFu;
+                mix[2u * (o + j)] += mbuf_l[kk] << 1;   /* niveaux de libvgm (vgm2wav) : FM x 2, PSG : psg.h */
+                mix[2u * (o + j) + 1u] += mbuf_r[kk] << 1;
+            }
         }
-        mbuf_l[0] = mbuf_l[mbuf_n]; mbuf_r[0] = mbuf_r[mbuf_n];
-        if (k) ym2612_update_one(ym, k, b);
-        mbuf_n = k;
-        for (j = 0; j < n; j++) {
-            ym_pos += ym_step; kk += ym_pos >> 16; ym_pos &= 0xFFFFu;
-            mix[2u * (o + j)] += mbuf_l[kk] << 1;   /* niveaux de libvgm (vgm2wav) : FM x 2, PSG : psg.h */
-            mix[2u * (o + j) + 1u] += mbuf_r[kk] << 1;
+        if (song.psg_clock) {
+            if (song.ym_clock) psg_render(&psg, mix + 2u * o, n);
+            else {                               /* Master System, Game Gear : PSG seul, x 2 comme libvgm (mesuré) */
+                static int32_t tmp[BLOCK * 2u];
+                for (j = 0; j < 2u * n; j++) tmp[j] = 0;
+                psg_render(&psg, tmp, n);
+                for (j = 0; j < 2u * n; j++) mix[2u * o + j] += tmp[j] << 1;
+            }
         }
-        psg_render(&psg, mix + 2u * o, n);
+        if (song.gb_clock) gb_render(&gb, mix + 2u * o, n);
+        if (song.nes_clock) nes_render(&nes, mix + 2u * o, n);
         wait -= n; left -= n; o += n; played += n;
     }
     for (i = 0; i < BLOCK; i++, w++) {
@@ -228,7 +248,7 @@ static void app_sysex(const uint8_t *p, uint32_t n)
         i++; t = 0;
         while (i < n && p[i] && t < sizeof sys - 1u) sys[t++] = (char)p[i++];
         sys[t] = 0;
-        ack_cmd = 2;                            /* 2 : ce firmware attend un RSM1 (1 : l'ancien, un VGM brut) */
+        ack_cmd = 4;                            /* 4 : ce firmware lit le RSM2 (2 : RSM1 seulement ; 1 : un VGM brut) */
     } else if (p[3] == 2u && n >= 6u) {         /* données */
         uint32_t seq = (uint32_t)p[4] | (uint32_t)p[5] << 7, off = seq * 512u, want, got;
         if (!rx_active || off >= rx_size) { ack_cmd = 0x42; return; }

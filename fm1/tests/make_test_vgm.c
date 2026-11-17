@@ -6,6 +6,8 @@
  *   long : 60 s de DAC en plus dans la boucle (un fichier de plus de 300 Ko, comme les vraies pistes à batterie)
  *   stream : 2 s de flux DAC (VGM 1.60 : 0x90-0x95) en plus dans la boucle
  *   gg : un morceau Game Gear (SN76489 seul, stéréo), 4 s, sans boucle
+ *   gb : un morceau Game Boy (4 voies, enveloppe, balayage, longueur, panoramique), 6 s, boucle sur les 2 dernières
+ *   nes : un morceau NES (2 carrées dont une qui balaye, triangle, bruit, DPCM), 6 s, boucle sur les 2 dernières
  * Déroulé (secondes) : 0-2 accord FM, 2-3 PSG seul (3 voies), 3-4 bruit, 4-5 DAC (une rampe), puis boucle sur le PSG. */
 #include <stdio.h>
 #include <stdint.h>
@@ -29,6 +31,78 @@ static void wait(uint32_t s)
     }
 }
 
+static void gbw(uint32_t reg, uint32_t val) { b(0xB3); b(reg - 0xFF10u); b(val); }
+static void nesw(uint32_t reg, uint32_t val) { b(0xB4); b(reg - 0x4000u); b(val); }
+
+static int finish(const char *path, const char *what, uint32_t loop_at, uint32_t loop_len)
+{
+    FILE *f;
+    b(0x66);
+    w32(0x04, n - 4); w32(0x18, total);
+    if (loop_at) { w32(0x1C, loop_at - 0x1C); w32(0x20, loop_len); }
+    f = fopen(path, "wb");
+    if (!f) return 1;
+    fwrite(buf, 1, n, f); fclose(f);
+    printf("test VGM (%s) : %u octets, %u trames\n", what, n, total);
+    return 0;
+}
+
+static int game_boy(const char *path)
+{
+    uint32_t i, loop_at;
+    n = 0xC0; w32(0x08, 0x161); w32(0x34, 0xC0 - 0x34); w32(0x80, 4194304);
+    gbw(0xFF26, 0x80); gbw(0xFF24, 0x77); gbw(0xFF25, 0xFF);
+    gbw(0xFF11, 0x80); gbw(0xFF12, 0xF0); gbw(0xFF13, 1750 & 255); gbw(0xFF14, 0x80 | 1750 >> 8);   /* voie 1 : 440 Hz */
+    wait(44100);
+    gbw(0xFF12, 0x00); gbw(0xFF14, 0x80);                                       /* (coupée par le DAC) */
+    gbw(0xFF16, 0x40); gbw(0xFF17, 0xF3); gbw(0xFF18, 1899 & 255); gbw(0xFF19, 0x80 | 1899 >> 8);  /* voie 2 : enveloppe qui décroît */
+    wait(44100);
+    gbw(0xFF1A, 0x00);
+    for (i = 0; i < 16; i++) gbw(0xFF30 + i, i < 8 ? i * 0x22 + 0x01 : 0xFE - (i - 8) * 0x22);         /* onde : un triangle */
+    gbw(0xFF1A, 0x80); gbw(0xFF1C, 0x20); gbw(0xFF1D, 1798 & 255); gbw(0xFF1E, 0x80 | 1798 >> 8);   /* voie 3 */
+    wait(44100);
+    gbw(0xFF1A, 0x00);
+    gbw(0xFF21, 0xF1); gbw(0xFF22, 0x45); gbw(0xFF23, 0x80);                    /* voie 4 : bruit qui décroît */
+    wait(44100);
+    loop_at = n;
+    gbw(0xFF25, 0x12);                                                          /* voie 1 à droite, voie 2 à gauche */
+    gbw(0xFF10, 0x16); gbw(0xFF11, 0xC0); gbw(0xFF12, 0xA0); gbw(0xFF13, 1500 & 255); gbw(0xFF14, 0x80 | 1500 >> 8);   /* balayage */
+    gbw(0xFF16, 0x00); gbw(0xFF17, 0xC0); gbw(0xFF18, 1650 & 255); gbw(0xFF19, 0xC0 | 1650 >> 8);   /* longueur : 1/4 s */
+    for (i = 0; i < 120; i++) wait(735);
+    gbw(0xFF25, 0xFF); gbw(0xFF12, 0x00); gbw(0xFF14, 0x80); gbw(0xFF17, 0x00); gbw(0xFF19, 0x80);
+    return finish(path, "Game Boy", loop_at, 88200);
+}
+
+static int nes(const char *path)
+{
+    uint32_t i, at, loop_at;
+    n = 0xC0; w32(0x08, 0x161); w32(0x34, 0xC0 - 0x34); w32(0x84, 1789772);
+    b(0x67); b(0x66); b(0xC2); at = n; b(0); b(0); b(0); b(0);                   /* DPCM : 1 Ko à $C000 */
+    b(0x00); b(0xC0);
+    for (i = 0; i < 1024; i++) b(i % 32 < 16 ? 0xFF : 0x00);
+    w32(at, 1026);
+    nesw(0x4015, 0x0F); nesw(0x4017, 0x40);
+    nesw(0x4000, 0xBF); nesw(0x4001, 0x08); nesw(0x4002, 253); nesw(0x4003, 0x08);      /* carrée 1 : 440 Hz, 50 % */
+    wait(44100);
+    nesw(0x4000, 0xB0);
+    nesw(0x4004, 0x4F); nesw(0x4005, 0x08); nesw(0x4006, 201); nesw(0x4007, 0x08);      /* carrée 2 : 25 %, enveloppe */
+    wait(44100);
+    nesw(0x4004, 0x70);
+    nesw(0x4008, 0xFF); nesw(0x400A, 126); nesw(0x400B, 0x08);                          /* triangle : 440 Hz */
+    wait(44100);
+    nesw(0x4008, 0x80); nesw(0x400B, 0x08);
+    nesw(0x400C, 0x38); nesw(0x400E, 0x08); nesw(0x400F, 0x08);                          /* bruit, volume 8 */
+    wait(44100);
+    loop_at = n;
+    nesw(0x400C, 0x30);
+    nesw(0x4010, 0x4F); nesw(0x4011, 0x40); nesw(0x4012, 0x00); nesw(0x4013, 0x3F);      /* DPCM en boucle */
+    nesw(0x4015, 0x1F);
+    nesw(0x4000, 0x9C); nesw(0x4001, 0xA3); nesw(0x4002, 120); nesw(0x4003, 0x01);       /* carrée 1 : balayage */
+    for (i = 0; i < 120; i++) wait(735);
+    nesw(0x4015, 0x00);
+    return finish(path, "NES", loop_at, 88200);
+}
+
 int main(int argc, char **argv)
 {
     static const uint8_t OP[4] = {0, 8, 4, 12}, TL[4] = {0x22, 0x0A, 0x22, 0x0A}, MUL[4] = {1, 1, 2, 1};
@@ -37,7 +111,9 @@ int main(int argc, char **argv)
     uint32_t v, o, i, pcm_at, loop_at;
     FILE *f;
     memcpy(buf, "Vgm ", 4);
-    if (argc > 2 && argv[2][0] == 'g') {              /* gg : Game Gear (SN76489 seul, stéréo 0x4F), 4 s */
+    if (argc > 2 && !strcmp(argv[2], "gb")) return game_boy(argv[1]);
+    if (argc > 2 && !strcmp(argv[2], "nes")) return nes(argv[1]);
+    if (argc > 2 && !strcmp(argv[2], "gg")) {              /* gg : Game Gear (SN76489 seul, stéréo 0x4F), 4 s */
         w32(0x08, 0x151); w32(0x0C, 3579545); w32(0x34, 0x40 - 0x34);
         buf[0x28] = 0x09; buf[0x29] = 0x00; buf[0x2A] = 16;   /* bruit Sega */
         psg(0x80 | 0x0D); psg(0x0D); psg(0x90 | 1);

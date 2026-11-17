@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * ROMsounds : lire un fichier VGM (en-tête, étiquettes GD3), le préparer pour le FM-1 et le découper en SysEx.
- * Ce que reçoit le FM-1 (« RSM1 », firmware/src/romsounds.c) :
- *   en-tête de 40 octets : "RSM1", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
- *   parties, avertissements, bruit du SN76489 (rebouclage | largeur << 16) ; puis la banque PCM (brute, toutes les données de type 0 bout à bout), puis les commandes
+ * Ce que reçoit le FM-1 (« RSM2 », firmware/src/romsounds.c) :
+ *   en-tête de 48 octets : "RSM2", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
+ *   parties, avertissements, bruit du SN76489 (rebouclage | largeur << 16), horloges Game Boy et NES ; puis la banque
+ *   d'échantillons (brute : pour le YM2612, toutes les données de type 0 bout à bout ; pour la NES, l'image de sa mémoire
+ *   $8000-$FFFF, que lit le DMC), puis les commandes
  *   avant la boucle (A) et à partir de la boucle (B), chacune compressée (deflate brut). Le FM-1 garde le tout compressé
  *   et décompresse en jouant ; à la fin de B, il reprend B : la boucle ne demande aucun retour en arrière.
  * Utilisé par index.html (navigateur) et tests/rx_test.js (Node). */
@@ -13,8 +15,7 @@ const VGM_ERR = { 0x41: 'fichier trop gros pour le FM-1', 0x42: 'données hors d
   0x44: 'fichier incomplet', 0x45: 'contrôle CRC faux', 0x49: 'ce n’est pas un fichier VGM', 0x4A: 'fichier VGM trop court',
   0x4B: 'ni YM2612 ni SN76489 dans ce fichier', 0x4C: 'préparation du morceau illisible' };
 // horloges des autres puces dans l'en-tête (spécification VGM 1.71)
-const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x58, 0x5C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x74, 0x80,
-  0x84, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
+const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x58, 0x5C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x74, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
 const rd32 = (u, i) => (u[i] | u[i + 1] << 8 | u[i + 2] << 16 | u[i + 3] << 24) >>> 0;
 // l'écran du FM-1 n'a que l'ASCII : accents retirés, le reste remplacé par « ? »
 const ascii = t => (t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x20-\x7E]/g, '?').trim().slice(0, 28);
@@ -30,6 +31,9 @@ const b35 = v => [v & 127, (v >>> 7) & 127, (v >>> 14) & 127, (v >>> 21) & 127, 
 function parseVgm(u) {
   if (u.length < 0x40 || String.fromCharCode(u[0], u[1], u[2], u[3]) !== 'Vgm ') throw new Error('ce n’est pas un fichier VGM');
   const ver = rd32(u, 8), sn = rd32(u, 0x0C) & 0x3FFFFFFF, ym = (ver >= 0x110 ? rd32(u, 0x2C) : rd32(u, 0x10)) & 0x3FFFFFFF;
+  const head = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
+  const gb = head >= 0x84 ? rd32(u, 0x80) & 0x3FFFFFFF : 0, nes = head >= 0x88 ? rd32(u, 0x84) & 0x3FFFFFFF : 0;
+  const fds = head >= 0x88 && (rd32(u, 0x84) & 0x80000000) !== 0;
   const start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
   const gd3 = rd32(u, 0x14) ? 0x14 + rd32(u, 0x14) : 0;
   const tags = [];
@@ -42,10 +46,11 @@ function parseVgm(u) {
   for (const o of OTHER_CHIPS) if (o + 4 <= Math.min(start, 0x100) && (rd32(u, o) & 0x3FFFFFFF)) others = true;
   if (ver >= 0x110 && rd32(u, 0x10)) others = true;
   const body = u.subarray(0, gd3 > start ? gd3 : u.length);
-  if (!ym && !sn) throw new Error('ni YM2612 ni SN76489 : ce n’est pas une musique Mega Drive / Master System');
-  return { body, ym, sn, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
+  if (!ym && !sn && !gb && !nes) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES)');
+  if (fds) others = true;                        // (le FDS de la NES : pas encore)
+  return { body, ym, sn, gb, nes, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
            title: ascii(tags[0] || tags[1]), game: ascii(tags[2] || tags[3]), system: tags[4] || '', author: tags[6] || '',
-           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : 'SN76489') };
+           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : gb ? 'Game Boy' : nes ? 'NES' : 'SN76489') };
 }
 
 // longueur d'une commande VGM à la position p (spécification 1.71) ; 0 : fin
@@ -62,7 +67,7 @@ function cmdLen(u, p) {
   if (c >= 0xE0) return 5;
   return 1;
 }
-const KEEP = c => c === 0x4F || c === 0x50 || c === 0x52 || c === 0x53 || c === 0x61 || c === 0x62 || c === 0x63 || (c >= 0x70 && c <= 0x8F) || c === 0xE0;
+const KEEP = c => c === 0xB3 || c === 0xB4 || c === 0x4F || c === 0x50 || c === 0x52 || c === 0x53 || c === 0x61 || c === 0x62 || c === 0x63 || (c >= 0x70 && c <= 0x8F) || c === 0xE0;
 
 async function deflateRaw(u) {
   const s = new Blob([u]).stream().pipeThrough(new CompressionStream('deflate-raw'));
@@ -136,11 +141,17 @@ async function packVgm(u) {
   const ver = rd32(u, 8), start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
   const loop = rd32(u, 0x1C) ? 0x1C + rd32(u, 0x1C) : 0;
   const pcm = [], a = [], b = [], blocks = [];
+  let nesMem = null;
   let p = start, dacStream = false, others = false, bankLen = 0;
   for (let q = start; q < u.length;) {            // d'abord la banque PCM (les flux DAC la lisent)
     const n = cmdLen(u, q);
     if (!n || q + n > u.length) break;
     if (u[q] === 0x67 && u[q + 2] === 0x00) { pcm.push(u.subarray(q + 7, q + n)); blocks.push([bankLen, n - 7]); bankLen += n - 7; }
+    if (u[q] === 0x67 && u[q + 2] === 0xC2 && n >= 9) {   // NES : écriture dans sa mémoire (adresse sur 16 bits)
+      const at = u[q + 7] | u[q + 8] << 8;
+      if (!nesMem) nesMem = new Uint8Array(0x8000);
+      for (let i = 0; i < n - 9; i++) if (at + i >= 0x8000 && at + i <= 0xFFFF) nesMem[at + i - 0x8000] = u[q + 9 + i];
+    }
     if (u[q] >= 0x90 && u[q] <= 0x95) dacStream = true;
     q += n;
   }
@@ -178,14 +189,15 @@ async function packVgm(u) {
   if (st) flush(loop ? b : a);
   const cat = parts => { const t = new Uint8Array(parts.reduce((x, y) => x + y.length, 0)); let o = 0; for (const q of parts) { t.set(q, o); o += q.length; } return t; };
   const end = Uint8Array.of(0x66);
-  const P = cat(pcm), A = await deflateRaw(cat([...a, end])), B = loop ? await deflateRaw(cat([...b, end])) : new Uint8Array(0);
-  const head = new Uint8Array(40), dv = new DataView(head.buffer);
-  head.set([0x52, 0x53, 0x4D, 0x31]);                 // "RSM1"
+  const P = v.ym ? cat(pcm) : nesMem || new Uint8Array(0), A = await deflateRaw(cat([...a, end])), B = loop ? await deflateRaw(cat([...b, end])) : new Uint8Array(0);
+  const head = new Uint8Array(48), dv = new DataView(head.buffer);
+  head.set([0x52, 0x53, 0x4D, 0x32]);                 // "RSM2"
   dv.setUint32(4, v.ym, true); dv.setUint32(8, v.sn, true);
   dv.setUint32(12, v.total, true); dv.setUint32(16, loop ? v.loop : 0, true);
   dv.setUint32(20, P.length, true); dv.setUint32(24, A.length, true); dv.setUint32(28, B.length, true);
   dv.setUint32(32, v.others || others ? 1 : 0, true);   // (les flux DAC sont convertis : plus d'avertissement)
   dv.setUint32(36, ver >= 0x110 ? (u[0x28] | u[0x29] << 8 | u[0x2A] << 16) >>> 0 : 0, true);   // bruit du SN76489
+  dv.setUint32(40, v.gb, true); dv.setUint32(44, v.nes, true);
   const blob = cat([head, P, A, B]);
   return Object.assign(v, { blob, pcmLen: P.length, aLen: A.length, bLen: B.length, dacStream, raw: u.length });
 }

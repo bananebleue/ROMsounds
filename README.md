@@ -3,7 +3,7 @@
 Extracteur de musiques de ROM de vieux jeux (Game Boy, Mega Drive, Super Nintendo…) et firmware lecteur pour le
 synthé M-VAVE FM-1. Fiche du projet : `bananebleue/Clodio`, `projets/extracteur-musiques-rom.md` (ticket #1).
 
-## État : lecteur Mega Drive, Master System, Game Gear
+## État : lecteur Mega Drive, Master System, Game Gear, Game Boy, NES
 
 Le firmware ROMsounds joue des musiques au format **VGM** : la page (section « Lecteur ») lit un fichier `.vgm` ou
 `.vgz`, le prépare (banque d'échantillons à part, musique compressée, flux DAC convertis) et l'envoie au FM-1 par USB.
@@ -12,6 +12,9 @@ Le FM-1 le joue aussitôt et le **garde en mémoire flash** (bibliothèque d'env
 - YM2612 : le cœur de MAME / Genesis Plus GX 1.5.1 (via libvgm), porté pour le FM-1 ; ~60 % du temps de calcul.
 - SN76489 (PSG) : écrit pour ROMsounds ; bruit réglable (Sega, TI), stéréo Game Gear. DAC : banque PCM, 0x8n / 0xE0 ;
   flux DAC des VGM 1.60 (0x90-0x95) rejoués par la page en écritures DAC, comme libvgm.
+- Game Boy (`gb_apu.h`) et NES (`nes_apu.h`, DMC compris) : écrits pour ROMsounds ; niveaux à 1 % de libvgm sauf le
+  bruit et le DMC de la NES (à ~1 dB). Pas encore : le FDS, les puces d'extension des cartouches (VRC6, N163…),
+  les échantillons DMC réécrits pendant le morceau (la page garde la dernière version de chaque adresse).
 - Niveaux et rendu comparés à libvgm (`vgm2wav`) : même enveloppe, mêmes niveaux.
 - Sur le FM-1 : PLAY pause / lecture ; REC revenir au début ; OCT− / OCT+ ou SELECT : morceau précédent / suivant ;
   REC maintenu 2 s : retirer le morceau de la bibliothèque. Au démarrage, le dernier morceau joué est prêt.
