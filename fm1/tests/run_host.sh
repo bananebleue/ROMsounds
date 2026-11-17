@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 mkdir -p build/host
 N=romsounds; D=
 if [ "${BOARD:-fm1}" = smk37 ]; then N=romsounds-smk37; D=-DBOARD_SMK37=1; fi
-cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST $D -DAPP_VER="\"${APP_VER:-dev}\"" -Ifirmware/hal -Ifirmware/src -Ifirmware/gen -o build/host/$N firmware/src/romsounds.c
+cc -O2 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-const-variable -DDINGHY_HOST $D -DAPP_VER="\"${APP_VER:-dev}\"" -Ifirmware/hal -Ifirmware/src -Ifirmware/gen -o build/host/$N firmware/src/romsounds.c firmware/ext/fmopn/fmopn.c firmware/ext/nuked-opn2/ym3438.c
 build/host/$N build/host/$N ${1:+"$1"}
 python3 - "$N" <<'PY'
 import sys

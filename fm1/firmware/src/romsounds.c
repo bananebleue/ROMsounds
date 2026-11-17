@@ -1,22 +1,29 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* ROMsounds : banc de mesure. Une puce YM2612 (Mega Drive) simulée par Nuked-OPN2, dont on mesure le coût sur le FM-1.
+/* ROMsounds : banc de mesure. Une puce YM2612 (Mega Drive) simulée, dont on mesure le coût sur le FM-1, avec deux
+ * simulations au choix (REC) :
+ *   MAME   fmopn.c (MAME / Genesis Plus GX 1.5.1 via libvgm, GPL-2.0-or-later, firmware/ext/fmopn) : échantillon par
+ *          échantillon, ~19 fois plus rapide que Nuked sur PC ; identique à l'octet près au cœur « GPGX » de libvgm
+ *   Nuked  Nuked-OPN2 (LGPL-2.1-or-later, firmware/ext/nuked-opn2) : cycle par cycle, la référence, 8,5 fois trop lente
+ *          sur le FM-1 (mesuré le 17/11/2026 : 848 %)
  *
  *   touches    jouent des notes sur les 6 voies de la puce (une voie par note, la plus ancienne reprise)
  *   PLAY       accord tenu sur les 6 voies (le cas le plus chargé) / arrêt
+ *   REC        change de simulation (MAME / Nuked)
  *   OCT- OCT+  l'octave
  *   MASTER     le volume (platform.c)
  *   écran      temps de calcul d'un bloc de 256 trames (5,8 ms de son), la charge en %, le maximum, les coupures
  *
  * Le calcul se fait dans la boucle principale, pas dans l'interruption audio : un tampon circulaire entre les deux.
  * Si le calcul est trop lent, le son se coupe (compteur « coupures ») mais l'écran et les touches restent vivants.
- * Nuked-OPN2 (LGPL-2.1-or-later, firmware/ext/nuked-opn2) : simulation au cycle près, 24 cycles par échantillon,
- * 53 267 échantillons par seconde (horloge 7,67 MHz / 144), ramenés à 44,1 kHz.
+ * Les deux calculent à la fréquence de la puce, 53 267 échantillons par seconde (horloge 7,67 MHz / 144), ramenés à
+ * 44,1 kHz (on reprend le dernier échantillon : suffisant pour mesurer).
  * Règles de la puce (pas de FPU, pas de division 64 bits) : nombres entiers seulement. */
 static void app_idle(void);
 #define LCD_IDLE app_idle
 #define APP_NAME "ROMSOUNDS"                    /* ROMsounds (base Dinghy 0.5) */
 #include "platform.c"
-#include "../ext/nuked-opn2/ym3438.c"
+#include "../ext/nuked-opn2/ym3438.h"           /* compilés à part, en -O2 (tools/build.py, tests/run_host.sh) */
+#include "../ext/fmopn/fmopn.h"
 #ifdef DINGHY_HOST                              /* sur PC (tests/host.c) : le compteur 24 MHz vient de l'horloge du PC */
 #include <time.h>
 #define FM1_TICKS_PER_US 24u
@@ -46,7 +53,10 @@ static void app_audio(int32_t *out, uint32_t n)
     if (m < n && ring_w) underruns++;
 }
 
-/* ---- la puce */
+/* ---- la puce : deux simulations */
+enum { ENG_MAME, ENG_NUKED };
+static uint32_t engine = ENG_MAME;
+static void *mame;                              /* fmopn.c : une seule puce, statique */
 static ym3438_t opn;
 static int16_t last_l, last_r;
 static uint32_t pos;                            /* position fractionnaire, Q16 : 53267 / 44100 par trame */
@@ -69,15 +79,44 @@ static void opn_sample(void)                    /* un échantillon de la puce : 
 
 static void opn_reg(uint32_t part, uint32_t reg, uint32_t val)   /* écrire un registre (part 0 : voies 1-3, 1 : 4-6) */
 {
+    if (engine == ENG_MAME) {
+        ym2612_write(mame, (UINT8)(part * 2u), (UINT8)reg);
+        ym2612_write(mame, (UINT8)(part * 2u + 1u), (UINT8)val);
+        return;
+    }
     OPN2_Write(&opn, part * 2u, (Bit8u)reg);
     opn_sample();
     OPN2_Write(&opn, part * 2u + 1u, (Bit8u)val);
     opn_sample();
 }
 
+static DEV_SMPL mbuf_l[320], mbuf_r[320];     /* [0] : le dernier échantillon du bloc précédent, puis ceux de ce bloc */
+static uint32_t mbuf_n;
+
+static void render_block_mame(void)
+{
+    uint32_t i, k = 0, p = pos, w = ring_w;
+    DEV_SMPL *b[2] = {mbuf_l + 1, mbuf_r + 1};
+    for (i = 0; i < BLOCK; i++) { p += STEP; while (p >= 65536u) { p -= 65536u; k++; } }   /* échantillons de la puce */
+    mbuf_l[0] = mbuf_l[mbuf_n]; mbuf_r[0] = mbuf_r[mbuf_n];
+    ym2612_update_one(mame, k, b);
+    mbuf_n = k;
+    k = 0;
+    for (i = 0; i < BLOCK; i++, w++) {
+        int32_t l, r;
+        pos += STEP;
+        while (pos >= 65536u) { pos -= 65536u; k++; }
+        l = mbuf_l[k] >> 1; r = mbuf_r[k] >> 1;   /* 6 voies jusqu'à ±8191 chacune : / 2 */
+        ring[(w & (RING - 1u)) * 2u] = (int16_t)(l > 32767 ? 32767 : l < -32767 ? -32767 : l);
+        ring[(w & (RING - 1u)) * 2u + 1u] = (int16_t)(r > 32767 ? 32767 : r < -32767 ? -32767 : r);
+    }
+    ring_w = w;
+}
+
 static void render_block(void)                  /* 256 trames à 44,1 kHz dans le tampon */
 {
     uint32_t i, w = ring_w;
+    if (engine == ENG_MAME) { render_block_mame(); return; }
     for (i = 0; i < BLOCK; i++, w++) {
         pos += STEP;
         while (pos >= 65536u) { pos -= 65536u; opn_sample(); }
@@ -93,8 +132,13 @@ static void opn_setup(void)
     static const uint8_t OP[4] = {0, 8, 4, 12};  /* OP1, OP2, OP3, OP4 */
     static const uint8_t TL[4] = {0x20, 0x08, 0x20, 0x08}, MUL[4] = {0x01, 0x01, 0x02, 0x01};
     uint32_t v, o;
-    OPN2_Reset(&opn);
-    OPN2_SetChipType(ym3438_mode_ym2612);
+    if (engine == ENG_MAME) {
+        if (!mame) mame = ym2612_init(NULL, 7670453u, 7670453u / 144u, NULL, NULL);
+        ym2612_reset_chip(mame);
+    } else {
+        OPN2_Reset(&opn);
+        OPN2_SetChipType(ym3438_mode_ym2612);
+    }
     opn_reg(0, 0x22, 0x00);                     /* LFO coupé */
     opn_reg(0, 0x27, 0x00);                     /* voie 3 normale */
     opn_reg(0, 0x2B, 0x00);                     /* DAC coupé */
@@ -177,6 +221,12 @@ static void draw_stats(uint32_t avg_us, uint32_t max_us, uint32_t cuts, uint32_t
     draw_text_box(0, 208, 240, &FONT_S, chord ? "PLAY : accord en cours" : "PLAY : accord 6 voix", chord ? C_ACC : C_OFF, 1);
 }
 
+static void draw_engine(void)
+{
+    draw_text_box(0, 56, 240, &FONT_S, engine == ENG_MAME ? "YM2612 MAME  (REC : Nuked)" : "YM2612 Nuked  (REC : MAME)",
+                  C_TXT, 1);
+}
+
 static void app_main(void)
 {
     static const uint8_t CHORD[6] = {48, 55, 60, 64, 67, 72};
@@ -187,7 +237,7 @@ static void app_main(void)
     opn_setup();
     lcd_fill(0, 0, 240, 240, C_BLACK);
     draw_text_box(0, 18, 240, &FONT_L, APP_NAME, C_ACC, 1);
-    draw_text_box(0, 56, 240, &FONT_S, "YM2612 Nuked OPN2  v" APP_VER, C_OFF, 1);
+    draw_engine();
     draw_stats(0, 0, 0, 0);
 
     for (;;) {
@@ -214,6 +264,14 @@ static void app_main(void)
         b = fm1_input_edges(&rel);
         if (b & (1u << BTN_OCT_DOWN) && oct > -2) oct--;
         if (b & (1u << BTN_OCT_UP) && oct < 2) oct++;
+        if (b & (1u << BTN_REC)) {                 /* autre simulation : le même son, l'accord repris s'il était tenu */
+            for (k = 0; k < 6u; k++) vnote[k] = 0;
+            engine = engine == ENG_MAME ? ENG_NUKED : ENG_MAME;
+            opn_setup();
+            if (chord) for (k = 0; k < 6u; k++) note_on(CHORD[k]);
+            draw_engine();
+            sum = cnt = mx = max_shown = 0; underruns = 0; t_shown = fm1_ms;
+        }
         if (b & (1u << BTN_PLAY)) {
             chord = !chord;
             for (k = 0; k < 6u; k++) { if (chord) note_on(CHORD[k]); else note_off(CHORD[k]); }

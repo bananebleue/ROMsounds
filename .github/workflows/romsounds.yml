@@ -34,6 +34,15 @@ jobs:
         working-directory: .
         run: node tests/fm1ota_test.js
 
+      - name: YM2612 (MAME) - tables à jour, rendu identique à libvgm
+        run: |
+          mkdir -p build
+          cc -O2 -w -o build/gen_fmopn_tables tools/gen_fmopn_tables.c -lm
+          build/gen_fmopn_tables | cmp - firmware/ext/fmopn/fmopn_tables.h
+          cc -O2 -w -Ifirmware/ext/fmopn -o build/fmopn_test tests/fmopn_test.c firmware/ext/fmopn/fmopn.c
+          test "$(build/fmopn_test | sha256sum | cut -d' ' -f1)" = "$(cat tests/fmopn_test.sha256)"
+          echo "rendu identique au cœur GPGX de libvgm"
+
       - name: Chaîne JieLi (pkgman.jieliapp.com)
         run: sh tools/get_toolchain.sh
 

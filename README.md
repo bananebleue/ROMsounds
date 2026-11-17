@@ -5,7 +5,7 @@ synthé M-VAVE FM-1. Fiche du projet : `bananebleue/Clodio`, `projets/extracteur
 
 ## État : banc d'essai du changement de firmware
 
-Pour l'instant, le firmware ROMsounds est un **banc de mesure** : une puce YM2612 (Mega Drive) simulée par Nuked-OPN2,
+Pour l'instant, le firmware ROMsounds est un **banc de mesure** : une puce YM2612 (Mega Drive) simulée par le cœur de MAME (ou Nuked-OPN2, avec REC),
 dont l'écran affiche le coût de calcul (en % du temps disponible). Les touches jouent des notes, PLAY un accord sur
 les 6 voies. Il sert à savoir si le FM-1 peut simuler la puce, avant d'écrire le lecteur.
 
