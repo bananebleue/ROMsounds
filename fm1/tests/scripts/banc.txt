@@ -1,0 +1,10 @@
+# ROMsounds, banc YM2612 : des notes, puis l'accord 6 voix (PLAY = bouton 12 sur le FM-1), des captures d'écran
+500 keys 0x1
+1200 keys 0x0
+1500 keys 0x91
+2500 keys 0x0
+3000 btn 12
+4500 shot
+5500 btn 12
+6500 shot
+7000 end

@@ -5,9 +5,9 @@ synthé M-VAVE FM-1. Fiche du projet : `bananebleue/Clodio`, `projets/extracteur
 
 ## État : banc d'essai du changement de firmware
 
-Pour l'instant, le firmware ROMsounds est Dinghy 0.5 renommé (un simple synthé sinus sur les touches), avec sa propre
-identité. Il sert à vérifier qu'on peut passer d'un firmware maison à un autre depuis le téléphone, avant d'écrire le
-lecteur.
+Pour l'instant, le firmware ROMsounds est un **banc de mesure** : une puce YM2612 (Mega Drive) simulée par Nuked-OPN2,
+dont l'écran affiche le coût de calcul (en % du temps disponible). Les touches jouent des notes, PLAY un accord sur
+les 6 voies. Il sert à savoir si le FM-1 peut simuler la puce, avant d'écrire le lecteur.
 
 | | |
 | --- | --- |
