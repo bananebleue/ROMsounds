@@ -80,6 +80,13 @@ jobs:
           build/rx_test build/nes.syx build/nes.rsm
           ROMSOUNDS_RSM=build/nes.rsm sh tests/run_host.sh build/fin.txt
           node ../tests/wav_check.js build/host/romsounds.wav 0.1-0.9:2000 1.1-1.4:2500 2.1-2.9:3000 3.1-3.9:1200 4.5-5.9:8000
+          # un pack .zip (comme ceux de VGMRips) : .vgm stocké, .vgz et .vgm compressés, dans un dossier, plus un .txt ignoré
+          mkdir -p build/pack/Pack && cd build/pack
+          ../make_test_vgm "01 Test.vgm" > /dev/null && ../make_test_vgm "Pack/10 Game Boy.vgm" gb > /dev/null
+          ../make_test_vgm nes.vgm nes > /dev/null && gzip -c nes.vgm > "02 NES.vgz" && printf 'notes' > readme.txt
+          zip -q -0 ../pack.zip "01 Test.vgm" && zip -q ../pack.zip readme.txt "02 NES.vgz" "Pack/10 Game Boy.vgm"
+          cd ../..
+          node ../tests/zip_test.js build/pack.zip "build/pack/01 Test.vgm" "build/pack/02 NES.vgz" "build/pack/Pack/10 Game Boy.vgm"
           # bibliothèque à tasser : B (40 Ko) retiré entre A et C, D (80 Ko) n'entre qu'une fois C descendu ; C relu et joué
           for x in A:100 B:40 C:101 D:80; do node ../tests/big_rsm.js build/test.rsm build/${x%%:*}.rsm ${x##*:}; done
           ROMSOUNDS_RSM=build/A.rsm,build/B.rsm,build/C.rsm,build/D.rsm ROMSOUNDS_EVERY=5000 sh tests/run_host.sh tests/scripts/tassement.txt

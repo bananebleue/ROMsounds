@@ -202,6 +202,38 @@ async function packVgm(u) {
   return Object.assign(v, { blob, pcmLen: P.length, aLen: A.length, bLen: B.length, dacStream, raw: u.length });
 }
 
+/** Un .zip (les packs de VGMRips) : [{ name, open() -> Promise<Uint8Array> }] pour ses .vgm / .vgz, dans l'ordre du pack.
+ * Méthodes 0 (stocké) et 8 (deflate, décompressé par DecompressionStream). */
+function zipList(z) {
+  let e = -1;
+  for (let i = z.length - 22; i >= Math.max(0, z.length - 22 - 65535); i--) if (rd32(z, i) === 0x06054B50) { e = i; break; }
+  if (e < 0) throw new Error('archive ZIP illisible');
+  const n = z[e + 10] | z[e + 11] << 8, out = [];
+  let p = rd32(z, e + 16);
+  for (let k = 0; k < n && rd32(z, p) === 0x02014B50; k++) {
+    const flags = z[p + 8] | z[p + 9] << 8, method = z[p + 10] | z[p + 11] << 8, csize = rd32(z, p + 20);
+    const nl = z[p + 28] | z[p + 29] << 8, xl = z[p + 30] | z[p + 31] << 8, cl = z[p + 32] | z[p + 33] << 8, lh = rd32(z, p + 42);
+    const raw = z.subarray(p + 46, p + 46 + nl);
+    const name = flags & 0x800 ? new TextDecoder().decode(raw) : String.fromCharCode(...raw);
+    p += 46 + nl + xl + cl;
+    if (!/\.vg[mz]$/i.test(name) || rd32(z, lh) !== 0x04034B50) continue;
+    const at = lh + 30 + (z[lh + 26] | z[lh + 27] << 8) + (z[lh + 28] | z[lh + 29] << 8), data = z.subarray(at, at + csize);
+    out.push({ name: name.split('/').pop(), open: async () => {
+      if (method === 0) return data;
+      if (method !== 8) throw new Error('compression ZIP non gérée (' + method + ')');
+      return new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+    } });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+}
+
+/** .vgz (gzip) -> .vgm ; un .vgm reste tel quel */
+async function gunzipIf(u) {
+  if (u[0] !== 0x1F || u[1] !== 0x8B) return u;
+  if (typeof DecompressionStream === 'undefined') throw new Error('ce navigateur ne sait pas décompresser un .vgz : utilise un .vgm');
+  return new Uint8Array(await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+}
+
 /** Les SysEx à envoyer : { begin, data: [...], end } (pack7 : celui de fm1ota.js) */
 function vgmFrames(body, title, game, pack7, sys) {
   const a7 = t => [...(t || '')].map(c => c.charCodeAt(0) & 127);
@@ -213,6 +245,6 @@ function vgmFrames(body, title, game, pack7, sys) {
            end: [0xF0, 0x7D, 0x52, 0x53, 0x03, ...b35(crc32(body)), 0xF7] };
 }
 
-const API = { VGM_MAX, VGM_ERR, parseVgm, packVgm, vgmFrames, crc32, ascii };
+const API = { VGM_MAX, VGM_ERR, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf };
 if (typeof module !== 'undefined' && module.exports) module.exports = API; else root.RSVGM = API;
 })(typeof self !== 'undefined' ? self : this);

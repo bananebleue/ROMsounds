@@ -54,11 +54,25 @@
     <h2>Lecteur Mega Drive · Master System · Game Gear · Game Boy · NES</h2>
     <p class="sub" style="margin:0 0 10px">Avec ROMsounds sur le FM-1 : choisis un fichier VGM (ou VGZ) de musique Mega Drive, Master System, Game Gear, Game Boy ou NES, puis envoie-le. Le FM-1 le joue aussitôt et le garde en mémoire, même éteint (environ 290 Ko pour la bibliothèque ; les plus anciens laissent la place). Sur le FM-1 : OCT− / OCT+ ou SELECT pour changer de morceau, REC maintenu 2 s pour en retirer un.</p>
     <div class="row">
-      <input type="file" id="vgmFile" accept=".vgm,.vgz" class="grow">
+      <input type="file" id="vgmFile" accept=".vgm,.vgz,.zip" class="grow">
       <button id="vgmSend" disabled>Envoyer au FM-1</button>
+    </div>
+    <div class="row" id="vgmPickRow" hidden>
+      <select id="vgmPick" class="grow" aria-label="Morceau du pack"></select>
     </div>
     <progress id="vgmBar" max="100" value="0" hidden></progress>
     <pre id="vgmLog">Aucun fichier.</pre>
+    <details style="margin-top:10px">
+      <summary>Où trouver des musiques ?</summary>
+      <p class="sub" style="margin:8px 0 6px">Les sites ci-dessous proposent les bandes son de jeux au format VGM, souvent en « packs » .zip d’un jeu entier : choisis directement le .zip ici, puis le morceau dans la liste.</p>
+      <ul style="margin:0 0 6px 20px; padding:0; color:var(--dim)">
+        <li><a href="https://vgmrips.net/" rel="noopener" target="_blank">VGMRips</a> : la plus grande collection (Mega Drive, Master System, Game Gear, Game Boy, NES et bien d’autres) ; parcourir par console :
+          <a href="https://vgmrips.net/packs/system/nintendo/game-boy" rel="noopener" target="_blank">Game Boy</a> ·
+          <a href="https://vgmrips.net/packs/system/nintendo/nintendo-entertainment-system" rel="noopener" target="_blank">NES</a>.</li>
+        <li><a href="https://www.smspower.org/Music/" rel="noopener" target="_blank">SMS Power</a> : Master System et Game Gear (le site d’origine du format VGM).</li>
+      </ul>
+      <p class="sub" style="margin:0">ROMsounds joue les packs dont les puces sont YM2612, SN76489 (SEGA PSG), Game Boy DMG ou NES APU. Les packs « FDS » ou avec des puces de cartouche en plus (VRC6, N163…) jouent sans ces voies-là.</p>
+    </details>
   </section>
 
   <section>
@@ -190,7 +204,7 @@ function ready() {
   document.querySelectorAll('[data-fw]').forEach(b => { b.disabled = busy || !okBox.checked || !b.dataset.ready; });
   $('fileInstall').disabled = busy || !okBox.checked || !filePkg;
   file.disabled = busy; $('detect').disabled = busy;
-  $('vgmSend').disabled = busy || !vgm; $('vgmFile').disabled = busy;
+  $('vgmSend').disabled = busy || !vgm; $('vgmFile').disabled = busy; $('vgmPick').disabled = busy;
   $('hint').hidden = okBox.checked;
 }
 
@@ -274,21 +288,12 @@ for (const fw of CATALOG) {
 const { VGM_MAX, VGM_ERR, packVgm, vgmFrames } = RSVGM;
 const mmss = n => Math.floor(n / 60) + ':' + String(Math.floor(n % 60)).padStart(2, '0');
 let vgm = null;
-async function readVgm(f) {
-  let u = new Uint8Array(await f.arrayBuffer());
-  if (u[0] === 0x1F && u[1] === 0x8B) {        // .vgz : gzip
-    if (typeof DecompressionStream === 'undefined') throw new Error('ce navigateur ne sait pas décompresser un .vgz : utilise un .vgm');
-    u = new Uint8Array(await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
-  }
-  return packVgm(u);
-}
-
-$('vgmFile').addEventListener('change', async () => {
-  const f = $('vgmFile').files && $('vgmFile').files[0];
+let pack = [];                                   // les morceaux d'un .zip (pack VGMRips)
+async function showVgm(u, name) {
   vgm = null; $('vgmBar').hidden = true;
-  if (!f) { $('vgmLog').textContent = 'Aucun fichier.'; ready(); return; }
   try {
-    const v = await readVgm(f);
+    const v = await packVgm(await RSVGM.gunzipIf(u));
+    const f = { name };
     const lines = [(v.title || f.name) + (v.game ? ' — ' + v.game : ''), (v.system ? v.system + ' · ' : '') + (v.author || '')];
     lines.push('Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489', v.gb && 'Game Boy', v.nes && 'NES 2A03'].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
     lines.push('Durée : ' + mmss(v.total / 44100) + (v.loop ? ' (boucle de ' + mmss(v.loop / 44100) + ')' : ''));
@@ -299,7 +304,30 @@ $('vgmFile').addEventListener('change', async () => {
     $('vgmLog').textContent = lines.filter(Boolean).join('\n');
   } catch (e) { $('vgmLog').textContent = 'Fichier refusé : ' + (e.message || e); }
   ready();
+}
+
+$('vgmFile').addEventListener('change', async () => {
+  const f = $('vgmFile').files && $('vgmFile').files[0];
+  vgm = null; pack = []; $('vgmBar').hidden = true; $('vgmPickRow').hidden = true;
+  if (!f) { $('vgmLog').textContent = 'Aucun fichier.'; ready(); return; }
+  const u = new Uint8Array(await f.arrayBuffer());
+  if (u[0] === 0x50 && u[1] === 0x4B) {         // .zip : un pack
+    try { pack = RSVGM.zipList(u); } catch (e) { $('vgmLog').textContent = 'Fichier refusé : ' + (e.message || e); ready(); return; }
+    if (!pack.length) { $('vgmLog').textContent = 'Fichier refusé : aucun .vgm ni .vgz dans ce .zip'; ready(); return; }
+    const sel = $('vgmPick');
+    sel.replaceChildren(...pack.map((t, i) => new Option(t.name.replace(/\.vg[mz]$/i, ''), i)));
+    $('vgmPickRow').hidden = false;
+    await pickFromPack();
+    return;
+  }
+  await showVgm(u, f.name);
 });
+async function pickFromPack() {
+  const t = pack[+$('vgmPick').value];
+  if (!t) return;
+  try { await showVgm(await t.open(), t.name); } catch (e) { $('vgmLog').textContent = 'Fichier refusé : ' + (e.message || e); ready(); }
+}
+$('vgmPick').addEventListener('change', pickFromPack);
 
 async function sendVgm() {
   if (!vgm || busy) return;
