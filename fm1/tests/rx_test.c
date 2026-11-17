@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* ROMsounds : relit les SysEx produits par la page (tests/rx_test.js) avec les outils du firmware (rx.h), comme
  * app_sysex (firmware/src/romsounds.c), et vérifie que le fichier revient à l'identique, CRC compris.
- *   cc -O2 -Ifirmware/src -o build/rx_test tests/rx_test.c && build/rx_test build/test.syx build/test.vgm */
+ *   cc -O2 -Ifirmware/src -o build/rx_test tests/rx_test.c && build/rx_test build/test.syx build/test.rsm */
 #include <stdio.h>
 #include <string.h>
 #include "rx.h"

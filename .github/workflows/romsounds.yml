@@ -47,10 +47,13 @@ jobs:
         run: |
           cc -O2 -Wall -o build/make_test_vgm tests/make_test_vgm.c
           build/make_test_vgm build/test.vgm
-          node ../tests/rx_test.js build/test.vgm build/test.syx
+          node ../tests/rx_test.js build/test.vgm build/test.syx build/test.rsm
           cc -O2 -Wall -Ifirmware/src -o build/rx_test tests/rx_test.c
-          build/rx_test build/test.syx build/test.vgm
-          ROMSOUNDS_VGM=build/test.vgm sh tests/run_host.sh tests/scripts/lecteur.txt
+          build/rx_test build/test.syx build/test.rsm
+          build/make_test_vgm build/long.vgm long          # plus de 300 Ko ouvert : doit passer une fois préparé
+          node ../tests/rx_test.js build/long.vgm build/long.syx build/long.rsm
+          build/rx_test build/long.syx build/long.rsm
+          ROMSOUNDS_RSM=build/test.rsm sh tests/run_host.sh tests/scripts/lecteur.txt
           # FM 0-2 s, PSG 2-3 s, bruit 3-4 s, DAC 4-5 s, boucle sur le PSG, pause (PLAY) à 6,2 s
           node ../tests/wav_check.js build/host/romsounds.wav 0.2-1.8:5000 2.2-2.9:2000 3.2-3.9:800 4.1-4.9:2000 5.2-6.0:2000 6.5-6.9:0
 

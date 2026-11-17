@@ -1,4 +1,4 @@
-# ROMsounds, lecteur : ROMSOUNDS_VGM=build/test.vgm (tests/make_test_vgm.c) ; captures d'écran, puis pause (PLAY = 12)
+# ROMsounds, lecteur : ROMSOUNDS_RSM=build/test.rsm (tests/make_test_vgm.c, puis tests/rx_test.js) ; captures d'écran, puis pause (PLAY = 12)
 1000 shot
 2500 shot
 4500 shot

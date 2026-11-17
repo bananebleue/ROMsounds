@@ -1,0 +1,1 @@
+uzlib, pfalcon/uzlib 6d60d65 (2021-11-15) : src/tinflate.c, uzlib.h, uzlib_conf.h, tinf_compat.h, tinf.h, defl_static.h, non modifiés. Licence zlib (LICENSE).

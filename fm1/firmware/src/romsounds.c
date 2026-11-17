@@ -5,15 +5,18 @@
  *            -O2 ; ~60 % du temps disponible sur le FM-1 (mesuré le 17/11/2026, 6 voies)
  *   SN76489  psg.h (ROMsounds)
  *   VGM      vgm.h (ROMsounds) : YM2612 + DAC (banque PCM, commandes 0x8n / 0xE0) + PSG, boucle
+ *   inflate  uzlib (zlib, firmware/ext/uzlib) : les commandes restent compressées en mémoire, décompressées en jouant
  *
  *   PLAY     lecture / pause (à la fin : recommence)
  *   REC      revenir au début
  *   écran    titre, jeu, temps, charge du calcul, coupures
  *
- * Le morceau arrive de la page d'installation (web/index.html) par SysEx, dans la RAM (300 Ko au plus) :
+ * Le morceau arrive de la page (web/index.html, préparé par web/romsounds.js) par SysEx, dans la RAM (ARENA) :
  *   F0 7D 52 53 01 <taille : 5 x 7 bits> <titre ASCII> 00 <jeu ASCII> F7      début
  *   F0 7D 52 53 02 <n° : 2 x 7 bits> <512 octets, empaquetés 8 -> 7 bits> F7  données (à n° x 512)
  *   F0 7D 52 53 03 <CRC-32 : 5 x 7 bits> F7                                    fin : vérifier, jouer
+ * Le contenu (« RSM1 ») : en-tête de 40 octets, banque PCM brute, commandes avant la boucle (A) et depuis la boucle (B),
+ * en deflate brut. À la fin de B, on reprend B : une boucle sans retour en arrière.
  * Le FM-1 répond à chacun par un contrôleur sur le canal 16 : CC 117 = 1 / 3 (début / fin acceptés), 0x40 + code
  * (refus) ; CC 118 = n° & 127 (données reçues). La page attend la réponse avant d'envoyer la suite.
  *
@@ -30,6 +33,7 @@ static void app_sysex(const uint8_t *p, uint32_t n);
 #include "psg.h"
 #include "vgm.h"
 #include "rx.h"
+#include "../ext/uzlib/uzlib.h"                 /* compilé à part, en -O2 */
 #ifdef DINGHY_HOST                              /* sur PC (tests/host.c) : le compteur 24 MHz vient de l'horloge du PC */
 #include <time.h>
 #define FM1_TICKS_PER_US 24u
@@ -47,7 +51,7 @@ static uint32_t fm1_ticks(void)
 static int16_t ring[RING * 2u];
 static volatile uint32_t ring_w, ring_r;        /* compteurs de trames, un seul écrivain chacun */
 static volatile uint32_t underruns;             /* blocs audio servis incomplets pendant la lecture */
-static volatile uint32_t playing;
+static volatile uint32_t playing, primed;     /* primed : le tampon a été rempli une fois depuis le départ */
 
 static void app_audio(int32_t *out, uint32_t n)
 {
@@ -57,12 +61,18 @@ static void app_audio(int32_t *out, uint32_t n)
         out[2u * i + 1u] += ring[(r & (RING - 1u)) * 2u + 1u];
     }
     ring_r = r;
-    if (m < n && playing) underruns++;
+    if (m < n && playing && primed) underruns++;
 }
 
-/* ---- le morceau */
-#define VGM_MAX (300u * 1024u)
+/* ---- le morceau : RSM1 en mémoire, compressé */
+#define VGM_MAX (268u * 1024u)                  /* = VGM_MAX de web/romsounds.js ; + le dictionnaire, + l'écran : le pool */
 static uint8_t vgm_buf[VGM_MAX] __attribute__((section(".pool")));
+static uint8_t dict[32768] __attribute__((section(".pool")));   /* fenêtre de la décompression */
+static const uint8_t *part_a, *part_b;
+static uint32_t len_a, len_b, cur_part;
+static TINF_DATA inf;
+static uint8_t obuf[256];
+static uint32_t obuf_r, obuf_n, inf_done, part_waited;   /* part_waited : la partie en cours a déjà fait attendre */
 static vgm_t song;
 static char title[32], game[32];
 static uint32_t loaded, ended, wait, played;    /* played : trames jouées (44,1 kHz) */
@@ -75,6 +85,64 @@ static void vgm_ym(uint32_t port, uint32_t reg, uint32_t val)
     ym2612_write(ym, (UINT8)(port * 2u + 1u), (UINT8)val);
 }
 static void vgm_psg(uint32_t val) { psg_write(&psg, val); }
+
+static void part_open(uint32_t which)           /* 0 : A (avant la boucle), 1 : B (la boucle) */
+{
+    cur_part = which;
+    inf.source = which ? part_b : part_a;
+    inf.source_limit = inf.source + (which ? len_b : len_a);
+    inf.source_read_cb = 0;
+    uzlib_uncompress_init(&inf, dict, sizeof dict);
+    obuf_r = obuf_n = 0;
+    inf_done = 0;
+    part_waited = 0;
+}
+static int vgm_get(void)
+{
+    if (obuf_r < obuf_n) return obuf[obuf_r++];
+    if (inf_done) return -1;
+    {
+        int res;
+        inf.dest_start = inf.dest = obuf;
+        inf.dest_limit = obuf + sizeof obuf;
+        res = uzlib_uncompress(&inf);
+        obuf_n = (uint32_t)(inf.dest - obuf);
+        obuf_r = 0;
+        if (res != TINF_OK) inf_done = 1;   /* fin de la partie (ou données abîmées) */
+        if (!obuf_n) return -1;
+    }
+    return obuf[obuf_r++];
+}
+static int vgm_restart(void)
+{
+    if (!len_b || !song.loop_samples) return 0;  /* pas de boucle : fin */
+    if (cur_part == 1u && !part_waited) return 0;   /* une boucle qui ne dure rien (ou abîmée) : on s'arrête */
+    part_open(1);
+    return 1;
+}
+
+/* uzlib : les sommes de contrôle de gzip / zlib ne servent pas (deflate brut, CRC-32 du tout vérifié à la réception) */
+uint32_t uzlib_adler32(const void *data, unsigned int length, uint32_t prev_sum) { (void)data; (void)length; return prev_sum; }
+uint32_t uzlib_crc32(const void *data, unsigned int length, uint32_t crc) { (void)data; (void)length; return crc; }
+
+static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+
+static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, préparer ; 0 ou un code d'erreur */
+{
+    const uint8_t *m = vgm_buf;
+    uint32_t pcm, a, b;
+    if (size < 40u || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || m[3] != '1') return 4;
+    pcm = rd32(m + 20); a = rd32(m + 24); b = rd32(m + 28);
+    if (40u + pcm + a + b != size || !a) return 4;
+    song.ym_clock = rd32(m + 4); song.psg_clock = rd32(m + 8);
+    song.total = rd32(m + 12); song.loop_samples = rd32(m + 16);
+    song.warn = rd32(m + 32);
+    song.pcm = m + 40; song.pcm_len = pcm;
+    part_a = m + 40 + pcm; len_a = a;
+    part_b = part_a + a; len_b = b;
+    if (!song.ym_clock && !song.psg_clock) return 3;
+    return 0;
+}
 
 /* le YM2612 calcule à sa propre fréquence (horloge / 144 : 53 267 Hz en NTSC), ramenée à 44,1 kHz */
 static uint32_t ym_step, ym_pos;                /* Q16 : échantillons de la puce par trame */
@@ -91,8 +159,10 @@ static void song_start(void)
     psg_init(&psg, song.psg_clock ? song.psg_clock : 3579545u);
     ym_step = (rate << 16) / 44100u;            /* (rate < 65536 : pas de débordement) */
     ym_pos = 0; mbuf_n = 0; mbuf_l[0] = mbuf_r[0] = 0;
-    song.pos = song.start; song.pcm_pos = 0; song.loops = 0;
+    song.pcm_pos = 0;
+    part_open(0);
     wait = 0; played = 0; ended = 0;
+    primed = 0;
     playing = 1;
 }
 
@@ -105,6 +175,7 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
         uint32_t n, k = 0, j, p = ym_pos, kk = 0;
         DEV_SMPL *b[2] = {mbuf_l + 1, mbuf_r + 1};
         if (!wait && !(wait = vgm_next(&song))) { playing = 0; ended = 1; break; }
+        part_waited = 1;
         n = wait < left ? wait : left;
         for (j = 0; j < n; j++) { p += ym_step; k += p >> 16; p &= 0xFFFFu; }
         mbuf_l[0] = mbuf_l[mbuf_n]; mbuf_r[0] = mbuf_r[mbuf_n];
@@ -229,10 +300,10 @@ static void draw_time(uint32_t pct, uint32_t cuts)
                                                                               : "PLAY lecture  REC debut", C_OFF, 1);
 }
 
-#ifdef DINGHY_HOST                              /* sur PC : ROMSOUNDS_VGM=fichier.vgm joue ce fichier au démarrage */
+#ifdef DINGHY_HOST                              /* sur PC : ROMSOUNDS_RSM=fichier.rsm joue ce morceau au démarrage */
 static void rs_host_load(void)
 {
-    const char *f = getenv("ROMSOUNDS_VGM");
+    const char *f = getenv("ROMSOUNDS_RSM");    /* un morceau préparé par la page (tests/rx_test.js) */
     FILE *fp = f ? fopen(f, "rb") : NULL;
     if (!fp) return;
     rx_size = (uint32_t)fread(vgm_buf, 1, VGM_MAX, fp);
@@ -262,7 +333,7 @@ static void app_main(void)
         if (load_req) {                          /* morceau reçu : l'ouvrir et répondre à la page */
             int e;
             load_req = 0;
-            e = vgm_open(&song, vgm_buf, rx_size);
+            e = song_load(rx_size);
             if (e) { loaded = 0; ack_cmd = 0x48 + e; }
             else { loaded = 1; song_start(); underruns = 0; ack_cmd = 3; }
             draw_song();
@@ -275,6 +346,7 @@ static void app_main(void)
             uint32_t t0 = fm1_ticks(), us, was = playing;
             render_block();
             us = (fm1_ticks() - t0) / FM1_TICKS_PER_US;
+            if (playing && ring_w - ring_r >= RING - BLOCK) primed = 1;
             if (was) { sum += us; cnt++; }
         }
 

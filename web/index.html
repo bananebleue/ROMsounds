@@ -271,7 +271,7 @@ for (const fw of CATALOG) {
 }
 
 /* ---------- Lecteur Mega Drive : envoyer un VGM à ROMsounds (protocole : firmware/src/romsounds.c) ---------- */
-const { VGM_MAX, VGM_ERR, parseVgm, vgmFrames } = RSVGM;
+const { VGM_MAX, VGM_ERR, packVgm, vgmFrames } = RSVGM;
 const mmss = n => Math.floor(n / 60) + ':' + String(Math.floor(n % 60)).padStart(2, '0');
 let vgm = null;
 async function readVgm(f) {
@@ -280,7 +280,7 @@ async function readVgm(f) {
     if (typeof DecompressionStream === 'undefined') throw new Error('ce navigateur ne sait pas décompresser un .vgz : utilise un .vgm');
     u = new Uint8Array(await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
   }
-  return parseVgm(u);
+  return packVgm(u);
 }
 
 $('vgmFile').addEventListener('change', async () => {
@@ -291,9 +291,10 @@ $('vgmFile').addEventListener('change', async () => {
     const v = await readVgm(f);
     const lines = [(v.title || f.name) + (v.game ? ' — ' + v.game : ''), (v.system ? v.system + ' · ' : '') + (v.author || '')];
     lines.push('Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489'].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
-    lines.push('Durée : ' + mmss(v.total / 44100) + (v.loop ? ' (boucle de ' + mmss(v.loop / 44100) + ')' : '') + ' · ' + kb(v.body.length));
-    if (!v.ym && !v.sn) throw new Error('ni YM2612 ni SN76489 : ce n’est pas une musique Mega Drive / Master System');
-    if (v.body.length > VGM_MAX) throw new Error('trop gros pour le FM-1 (' + kb(v.body.length) + ', 300 Ko au plus)');
+    lines.push('Durée : ' + mmss(v.total / 44100) + (v.loop ? ' (boucle de ' + mmss(v.loop / 44100) + ')' : ''));
+    lines.push('Pour le FM-1 : ' + kb(v.blob.length) + ' (fichier ouvert : ' + kb(v.raw) + ' ; échantillons ' + kb(v.pcmLen) + ', musique compressée ' + kb(v.aLen + v.bLen) + ')');
+    if (v.dacStream) lines.push('Attention : ce fichier utilise des « flux DAC », pas encore lus par ROMsounds : les échantillons (batterie, voix) manqueront.');
+    if (v.blob.length > VGM_MAX) throw new Error('trop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus)');
     vgm = v;
     $('vgmLog').textContent = lines.filter(Boolean).join('\n');
   } catch (e) { $('vgmLog').textContent = 'Fichier refusé : ' + (e.message || e); }
@@ -329,7 +330,7 @@ async function sendVgm() {
       }
     };
     const send = arr => { if (!dev.link.send(arr)) throw new Error('le FM-1 a été déconnecté'); };
-    const fr = vgmFrames(vgm.body, vgm.title, vgm.game, FM1OTA.pack7);
+    const fr = vgmFrames(vgm.blob, vgm.title, vgm.game, FM1OTA.pack7);
     acks.length = 0;
     send(fr.begin);
     if (await waitAck(117, v => v === 1, 2000) === null) throw new Error('le FM-1 ne répond pas au début de l’envoi');
@@ -340,7 +341,7 @@ async function sendVgm() {
       for (let tries = 0; tries < 4 && got === null; tries++) { send(frame); got = await waitAck(118, v => v === (seq & 127), 1000); }
       if (got === null) throw new Error('le FM-1 ne répond plus (bloc ' + seq + ' sur ' + n + ')');
       bar.value = Math.floor((seq + 1) * 100 / n);
-      if (seq % 8 === 0) log('Envoi : ' + bar.value + ' % (' + kb((seq + 1) * 512) + ' sur ' + kb(vgm.body.length) + ')');
+      if (seq % 8 === 0) log('Envoi : ' + bar.value + ' % (' + kb((seq + 1) * 512) + ' sur ' + kb(vgm.blob.length) + ')');
     }
     send(fr.end);
     if (await waitAck(117, v => v === 3, 8000) === null) throw new Error('le FM-1 n’a pas confirmé la fin de l’envoi');

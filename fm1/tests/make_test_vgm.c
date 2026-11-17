@@ -2,13 +2,14 @@
 /* ROMsounds : fabrique un petit fichier VGM de test (composé ici, aucune musique de jeu) qui exerce le lecteur :
  * YM2612 (6 voies FM, deux ports), PSG (voies carrées + bruit), DAC (bloc de données PCM + commandes 0x8n / 0xE0),
  * attentes 0x61 / 0x62 / 0x7n, et une boucle.
- *   cc -O2 -o build/make_test_vgm tests/make_test_vgm.c && build/make_test_vgm build/test.vgm
+ *   cc -O2 -o build/make_test_vgm tests/make_test_vgm.c && build/make_test_vgm build/test.vgm [long]
+ *   long : 60 s de DAC en plus dans la boucle (un fichier de plus de 300 Ko, comme les vraies pistes à batterie)
  * Déroulé (secondes) : 0-2 accord FM, 2-3 PSG seul (3 voies), 3-4 bruit, 4-5 DAC (une rampe), puis boucle sur le PSG. */
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
-static uint8_t buf[1 << 20];
+static uint8_t buf[1 << 21];
 static uint32_t n = 0x40;
 
 static void b(uint32_t v) { buf[n++] = (uint8_t)v; }
@@ -75,12 +76,21 @@ int main(int argc, char **argv)
         b(0x84); total += 4;
     }
     ym(0, 0x2B, 0x00);
+    if (argc > 2) {                                    /* long : 60 s de DAC à ~11 kHz, des motifs qui varient */
+        ym(0, 0x2B, 0x80);
+        for (i = 0; i < 60u * 11025u; i++) {
+            if (i % 2000 == 0) { b(0xE0); b((i / 2000) % 7 * 200); b(0); b(0); b(0); }
+            b(0x84); total += 4;
+            if (n > sizeof buf - 64) break;
+        }
+        ym(0, 0x2B, 0x00);
+    }
     wait(4410);
     b(0x66);
     w32(0x04, n - 4);
     w32(0x18, total);
     w32(0x1C, loop_at - 0x1C);
-    w32(0x20, total - 88200 - 0);
+    w32(0x20, total - 88200);
     f = fopen(argc > 1 ? argv[1] : "test.vgm", "wb");
     if (!f) return 1;
     fwrite(buf, 1, n, f);

@@ -6,11 +6,12 @@ synthé M-VAVE FM-1. Fiche du projet : `bananebleue/Clodio`, `projets/extracteur
 ## État : lecteur Mega Drive
 
 Le firmware ROMsounds joue des musiques Mega Drive au format **VGM** : la page (section « Lecteur Mega Drive ») lit
-un fichier `.vgm` ou `.vgz` et l'envoie au FM-1 par USB, qui le joue aussitôt (300 Ko au plus, en mémoire vive).
+un fichier `.vgm` ou `.vgz`, le prépare (banque d'échantillons à part, musique compressée) et l'envoie au FM-1 par
+USB, qui le garde compressé en mémoire vive (268 Ko au plus) et le décompresse en jouant (uzlib).
 
 - YM2612 : le cœur de MAME / Genesis Plus GX 1.5.1 (via libvgm), porté pour le FM-1 ; ~60 % du temps de calcul.
 - SN76489 (PSG) : écrit pour ROMsounds. DAC (samples) : banque PCM et commandes 0x8n / 0xE0.
-- Pas encore : les flux DAC des VGM 1.60 (commandes 0x90-0x95), plusieurs banques PCM, la mémoire après extinction.
+- Pas encore : les flux DAC des VGM 1.60 (commandes 0x90-0x95), la mémoire après extinction.
 - PLAY : pause / lecture ; REC : revenir au début.
 
 | | |

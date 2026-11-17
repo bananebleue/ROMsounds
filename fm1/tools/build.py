@@ -178,8 +178,8 @@ def build_app():
             ("cc", "-c", FW / "hal" / "fm1_isr.S", "-o", OUT / "fm1_isr.o"),
             ("cc", *flags, "-c", FW / "src" / "romsounds.c", "-o", OUT / "romsounds.o")]
     # ROMsounds : les simulations de puces à part, en -O2 (deux fois plus rapides qu'en -Os ; l'app reste en -Os)
-    ext = [*[f for f in flags if f != "-Os"], "-O2", "-Ifirmware/ext/fmopn"]
-    EXT = [(FW / "ext" / "fmopn" / "fmopn.c", OUT / "fmopn.o")]
+    ext = [*[f for f in flags if f != "-Os"], "-O2", "-Ifirmware/ext/fmopn", "-Ifirmware/ext/uzlib"]
+    EXT = [(FW / "ext" / "fmopn" / "fmopn.c", OUT / "fmopn.o"), (FW / "ext" / "uzlib" / "tinflate.c", OUT / "tinflate.o")]
     cmds += [("cc", *ext, "-c", src, "-o", obj) for src, obj in EXT]
     tc_all(*cmds)
     elf = OUT / "romsounds.elf"
