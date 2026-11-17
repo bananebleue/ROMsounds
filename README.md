@@ -3,16 +3,20 @@
 Extracteur de musiques de ROM de vieux jeux (Game Boy, Mega Drive, Super Nintendo…) et firmware lecteur pour le
 synthé M-VAVE FM-1. Fiche du projet : `bananebleue/Clodio`, `projets/extracteur-musiques-rom.md` (ticket #1).
 
-## État : banc d'essai du changement de firmware
+## État : lecteur Mega Drive
 
-Pour l'instant, le firmware ROMsounds est un **banc de mesure** : une puce YM2612 (Mega Drive) simulée par le cœur de MAME (ou Nuked-OPN2, avec REC),
-dont l'écran affiche le coût de calcul (en % du temps disponible). Les touches jouent des notes, PLAY un accord sur
-les 6 voies. Il sert à savoir si le FM-1 peut simuler la puce, avant d'écrire le lecteur.
+Le firmware ROMsounds joue des musiques Mega Drive au format **VGM** : la page (section « Lecteur Mega Drive ») lit
+un fichier `.vgm` ou `.vgz` et l'envoie au FM-1 par USB, qui le joue aussitôt (300 Ko au plus, en mémoire vive).
+
+- YM2612 : le cœur de MAME / Genesis Plus GX 1.5.1 (via libvgm), porté pour le FM-1 ; ~60 % du temps de calcul.
+- SN76489 (PSG) : écrit pour ROMsounds. DAC (samples) : banque PCM et commandes 0x8n / 0xE0.
+- Pas encore : les flux DAC des VGM 1.60 (commandes 0x90-0x95), plusieurs banques PCM, la mémoire après extinction.
+- PLAY : pause / lecture ; REC : revenir au début.
 
 | | |
 | --- | --- |
-| `fm1/` | firmware : Dinghy 0.5 (zvenson/dinghy ea1b6bf) + `ota.c` corrigé (retour au firmware officiel, règle de felucca-bsp) ; app `firmware/src/romsounds.c` ; identité `FM-1_950` (95N, à vérifier dans le Firmware Hub avant toute publication) ; `STORE_MAGIC` « RSND » |
-| `web/` | page d'installation (Web MIDI, Chrome ou Edge) : ROMsounds, un fichier `.fwsc`, ou le firmware officiel |
+| `fm1/` | firmware : Dinghy 0.5 (zvenson/dinghy ea1b6bf) + `ota.c` corrigé (retour au firmware officiel, règle de felucca-bsp) ; app `firmware/src/romsounds.c` (lecteur), `psg.h`, `vgm.h`, `rx.h`, `firmware/ext/fmopn` ; identité `FM-1_950` (95N, à vérifier dans le Firmware Hub avant toute publication) ; `STORE_MAGIC` « RSND » |
+| `web/` | page (Web MIDI, Chrome ou Edge) : envoi d'un VGM au lecteur (`romsounds.js`), installation de ROMsounds, d'un fichier `.fwsc` ou du firmware officiel |
 | `tests/fm1ota_test.js` | l'installateur web contre un FM-1 simulé : `node tests/fm1ota_test.js` |
 | `.github/workflows/romsounds.yml` | compilation, bancs d'essai, tests de changement de firmware (Dinghy publié par-dessus ROMsounds, officiel V16 par-dessus ROMsounds), publication sur GitHub Pages |
 

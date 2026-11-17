@@ -397,6 +397,16 @@ static void platform_poll(void)
     int32_t a;
     fm1_wdt_feed();
     usb_retry(fm1_ms);
+#ifdef APP_SYSEX                                /* ROMsounds : les SysEx F0 7D ... F7 (usage non commercial) vont à l'app */
+    {
+        const uint8_t *sx;
+        uint32_t sn;
+        if (ota_frame_get(&sx, &sn) && sn && sx[0] == 0x7Du) {
+            APP_SYSEX(sx, sn);
+            ota_frame_done();
+        }
+    }
+#endif
     ota_service();
     if (usb.ota_req) {
         usb.ota_req = 0;

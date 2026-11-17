@@ -1,29 +1,35 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* ROMsounds : banc de mesure. Une puce YM2612 (Mega Drive) simulée, dont on mesure le coût sur le FM-1, avec deux
- * simulations au choix (REC) :
- *   MAME   fmopn.c (MAME / Genesis Plus GX 1.5.1 via libvgm, GPL-2.0-or-later, firmware/ext/fmopn) : échantillon par
- *          échantillon, ~19 fois plus rapide que Nuked sur PC ; identique à l'octet près au cœur « GPGX » de libvgm
- *   Nuked  Nuked-OPN2 (LGPL-2.1-or-later, firmware/ext/nuked-opn2) : cycle par cycle, la référence, 8,5 fois trop lente
- *          sur le FM-1 (mesuré le 17/11/2026 : 848 %)
+/* ROMsounds : lecteur de musiques Mega Drive (fichiers VGM) sur le M-VAVE FM-1.
  *
- *   touches    jouent des notes sur les 6 voies de la puce (une voie par note, la plus ancienne reprise)
- *   PLAY       accord tenu sur les 6 voies (le cas le plus chargé) / arrêt
- *   REC        change de simulation (MAME / Nuked)
- *   OCT- OCT+  l'octave
- *   MASTER     le volume (platform.c)
- *   écran      temps de calcul d'un bloc de 256 trames (5,8 ms de son), la charge en %, le maximum, les coupures
+ *   YM2612   fmopn.c (MAME / Genesis Plus GX 1.5.1 via libvgm, GPL-2.0-or-later, firmware/ext/fmopn), compilé à part en
+ *            -O2 ; ~60 % du temps disponible sur le FM-1 (mesuré le 17/11/2026, 6 voies)
+ *   SN76489  psg.h (ROMsounds)
+ *   VGM      vgm.h (ROMsounds) : YM2612 + DAC (banque PCM, commandes 0x8n / 0xE0) + PSG, boucle
  *
- * Le calcul se fait dans la boucle principale, pas dans l'interruption audio : un tampon circulaire entre les deux.
- * Si le calcul est trop lent, le son se coupe (compteur « coupures ») mais l'écran et les touches restent vivants.
- * Les deux calculent à la fréquence de la puce, 53 267 échantillons par seconde (horloge 7,67 MHz / 144), ramenés à
- * 44,1 kHz (on reprend le dernier échantillon : suffisant pour mesurer).
+ *   PLAY     lecture / pause (à la fin : recommence)
+ *   REC      revenir au début
+ *   écran    titre, jeu, temps, charge du calcul, coupures
+ *
+ * Le morceau arrive de la page d'installation (web/index.html) par SysEx, dans la RAM (300 Ko au plus) :
+ *   F0 7D 52 53 01 <taille : 5 x 7 bits> <titre ASCII> 00 <jeu ASCII> F7      début
+ *   F0 7D 52 53 02 <n° : 2 x 7 bits> <512 octets, empaquetés 8 -> 7 bits> F7  données (à n° x 512)
+ *   F0 7D 52 53 03 <CRC-32 : 5 x 7 bits> F7                                    fin : vérifier, jouer
+ * Le FM-1 répond à chacun par un contrôleur sur le canal 16 : CC 117 = 1 / 3 (début / fin acceptés), 0x40 + code
+ * (refus) ; CC 118 = n° & 127 (données reçues). La page attend la réponse avant d'envoyer la suite.
+ *
+ * Le calcul se fait dans la boucle principale (pas dans l'interruption audio) : un tampon circulaire entre les deux.
  * Règles de la puce (pas de FPU, pas de division 64 bits) : nombres entiers seulement. */
+#include <stdint.h>
 static void app_idle(void);
+static void app_sysex(const uint8_t *p, uint32_t n);
 #define LCD_IDLE app_idle
+#define APP_SYSEX app_sysex
 #define APP_NAME "ROMSOUNDS"                    /* ROMsounds (base Dinghy 0.5) */
 #include "platform.c"
-#include "../ext/nuked-opn2/ym3438.h"           /* compilés à part, en -O2 (tools/build.py, tests/run_host.sh) */
-#include "../ext/fmopn/fmopn.h"
+#include "../ext/fmopn/fmopn.h"                 /* compilé à part, en -O2 (tools/build.py, tests/run_host.sh) */
+#include "psg.h"
+#include "vgm.h"
+#include "rx.h"
 #ifdef DINGHY_HOST                              /* sur PC (tests/host.c) : le compteur 24 MHz vient de l'horloge du PC */
 #include <time.h>
 #define FM1_TICKS_PER_US 24u
@@ -40,7 +46,8 @@ static uint32_t fm1_ticks(void)
 #define BLOCK 256u
 static int16_t ring[RING * 2u];
 static volatile uint32_t ring_w, ring_r;        /* compteurs de trames, un seul écrivain chacun */
-static volatile uint32_t underruns;             /* blocs audio servis incomplets */
+static volatile uint32_t underruns;             /* blocs audio servis incomplets pendant la lecture */
+static volatile uint32_t playing;
 
 static void app_audio(int32_t *out, uint32_t n)
 {
@@ -50,149 +57,114 @@ static void app_audio(int32_t *out, uint32_t n)
         out[2u * i + 1u] += ring[(r & (RING - 1u)) * 2u + 1u];
     }
     ring_r = r;
-    if (m < n && ring_w) underruns++;
+    if (m < n && playing) underruns++;
 }
 
-/* ---- la puce : deux simulations */
-enum { ENG_MAME, ENG_NUKED };
-static uint32_t engine = ENG_MAME;
-static void *mame;                              /* fmopn.c : une seule puce, statique */
-static ym3438_t opn;
-static int16_t last_l, last_r;
-static uint32_t pos;                            /* position fractionnaire, Q16 : 53267 / 44100 par trame */
-#define STEP 79164u                             /* 53267,0 * 65536 / 44100 */
+/* ---- le morceau */
+#define VGM_MAX (300u * 1024u)
+static uint8_t vgm_buf[VGM_MAX] __attribute__((section(".pool")));
+static vgm_t song;
+static char title[32], game[32];
+static uint32_t loaded, ended, wait, played;    /* played : trames jouées (44,1 kHz) */
+static void *ym;
+static psg_t psg;
 
-static void opn_sample(void)                    /* un échantillon de la puce : 24 cycles */
+static void vgm_ym(uint32_t port, uint32_t reg, uint32_t val)
 {
-    int32_t l = 0, r = 0;
-    uint32_t k;
-    Bit16s b[2];
-    for (k = 0; k < 24u; k++) {
-        OPN2_Clock(&opn, b);
-        l += b[0];
-        r += b[1];
-    }
-    l *= 5; r *= 5;                             /* gain : voir tests (WAV de tests/run_host.sh) */
-    last_l = (int16_t)(l > 32767 ? 32767 : l < -32767 ? -32767 : l);
-    last_r = (int16_t)(r > 32767 ? 32767 : r < -32767 ? -32767 : r);
+    ym2612_write(ym, (UINT8)(port * 2u), (UINT8)reg);
+    ym2612_write(ym, (UINT8)(port * 2u + 1u), (UINT8)val);
 }
+static void vgm_psg(uint32_t val) { psg_write(&psg, val); }
 
-static void opn_reg(uint32_t part, uint32_t reg, uint32_t val)   /* écrire un registre (part 0 : voies 1-3, 1 : 4-6) */
-{
-    if (engine == ENG_MAME) {
-        ym2612_write(mame, (UINT8)(part * 2u), (UINT8)reg);
-        ym2612_write(mame, (UINT8)(part * 2u + 1u), (UINT8)val);
-        return;
-    }
-    OPN2_Write(&opn, part * 2u, (Bit8u)reg);
-    opn_sample();
-    OPN2_Write(&opn, part * 2u + 1u, (Bit8u)val);
-    opn_sample();
-}
-
-static DEV_SMPL mbuf_l[320], mbuf_r[320];     /* [0] : le dernier échantillon du bloc précédent, puis ceux de ce bloc */
+/* le YM2612 calcule à sa propre fréquence (horloge / 144 : 53 267 Hz en NTSC), ramenée à 44,1 kHz */
+static uint32_t ym_step, ym_pos;                /* Q16 : échantillons de la puce par trame */
+static DEV_SMPL mbuf_l[320], mbuf_r[320];       /* [0] : le dernier échantillon du lot précédent */
 static uint32_t mbuf_n;
 
-static void render_block_mame(void)
+static void song_start(void)
 {
-    uint32_t i, k = 0, p = pos, w = ring_w;
-    DEV_SMPL *b[2] = {mbuf_l + 1, mbuf_r + 1};
-    for (i = 0; i < BLOCK; i++) { p += STEP; while (p >= 65536u) { p -= 65536u; k++; } }   /* échantillons de la puce */
-    mbuf_l[0] = mbuf_l[mbuf_n]; mbuf_r[0] = mbuf_r[mbuf_n];
-    ym2612_update_one(mame, k, b);
-    mbuf_n = k;
-    k = 0;
+    uint32_t yc = song.ym_clock ? song.ym_clock : 7670453u, rate;
+    if (yc > 9000000u) yc = 9000000u;
+    rate = yc / 144u;
+    ym = ym2612_init(NULL, yc, rate, NULL, NULL);
+    ym2612_reset_chip(ym);
+    psg_init(&psg, song.psg_clock ? song.psg_clock : 3579545u);
+    ym_step = (rate << 16) / 44100u;            /* (rate < 65536 : pas de débordement) */
+    ym_pos = 0; mbuf_n = 0; mbuf_l[0] = mbuf_r[0] = 0;
+    song.pos = song.start; song.pcm_pos = 0; song.loops = 0;
+    wait = 0; played = 0; ended = 0;
+    playing = 1;
+}
+
+static void render_block(void)                  /* 256 trames à 44,1 kHz dans le tampon */
+{
+    static int32_t mix[BLOCK * 2u];
+    uint32_t left = BLOCK, o = 0, i, w = ring_w;
+    for (i = 0; i < BLOCK * 2u; i++) mix[i] = 0;
+    while (left && playing) {
+        uint32_t n, k = 0, j, p = ym_pos, kk = 0;
+        DEV_SMPL *b[2] = {mbuf_l + 1, mbuf_r + 1};
+        if (!wait && !(wait = vgm_next(&song))) { playing = 0; ended = 1; break; }
+        n = wait < left ? wait : left;
+        for (j = 0; j < n; j++) { p += ym_step; k += p >> 16; p &= 0xFFFFu; }
+        mbuf_l[0] = mbuf_l[mbuf_n]; mbuf_r[0] = mbuf_r[mbuf_n];
+        if (k) ym2612_update_one(ym, k, b);
+        mbuf_n = k;
+        for (j = 0; j < n; j++) {
+            ym_pos += ym_step; kk += ym_pos >> 16; ym_pos &= 0xFFFFu;
+            mix[2u * (o + j)] += mbuf_l[kk] >> 1;   /* 6 voies jusqu'à ±8191 chacune : / 2 */
+            mix[2u * (o + j) + 1u] += mbuf_r[kk] >> 1;
+        }
+        psg_render(&psg, mix + 2u * o, n);
+        wait -= n; left -= n; o += n; played += n;
+    }
     for (i = 0; i < BLOCK; i++, w++) {
-        int32_t l, r;
-        pos += STEP;
-        while (pos >= 65536u) { pos -= 65536u; k++; }
-        l = mbuf_l[k] >> 1; r = mbuf_r[k] >> 1;   /* 6 voies jusqu'à ±8191 chacune : / 2 */
+        int32_t l = mix[2u * i], r = mix[2u * i + 1u];
         ring[(w & (RING - 1u)) * 2u] = (int16_t)(l > 32767 ? 32767 : l < -32767 ? -32767 : l);
         ring[(w & (RING - 1u)) * 2u + 1u] = (int16_t)(r > 32767 ? 32767 : r < -32767 ? -32767 : r);
     }
     ring_w = w;
 }
 
-static void render_block(void)                  /* 256 trames à 44,1 kHz dans le tampon */
-{
-    uint32_t i, w = ring_w;
-    if (engine == ENG_MAME) { render_block_mame(); return; }
-    for (i = 0; i < BLOCK; i++, w++) {
-        pos += STEP;
-        while (pos >= 65536u) { pos -= 65536u; opn_sample(); }
-        ring[(w & (RING - 1u)) * 2u] = last_l;
-        ring[(w & (RING - 1u)) * 2u + 1u] = last_r;
-    }
-    ring_w = w;
-}
+/* ---- réception depuis la page (appelé par platform_poll) */
+static uint32_t rx_size, rx_got, rx_active, load_req;
+static volatile int32_t ack_cmd = -1, ack_seq = -1;
 
-/* Un son d'orgue clair, algorithme 4 (deux paires modulateur -> porteuse), le même sur les 6 voies */
-static void opn_setup(void)
+static void app_sysex(const uint8_t *p, uint32_t n)
 {
-    static const uint8_t OP[4] = {0, 8, 4, 12};  /* OP1, OP2, OP3, OP4 */
-    static const uint8_t TL[4] = {0x20, 0x08, 0x20, 0x08}, MUL[4] = {0x01, 0x01, 0x02, 0x01};
-    uint32_t v, o;
-    if (engine == ENG_MAME) {
-        if (!mame) mame = ym2612_init(NULL, 7670453u, 7670453u / 144u, NULL, NULL);
-        ym2612_reset_chip(mame);
-    } else {
-        OPN2_Reset(&opn);
-        OPN2_SetChipType(ym3438_mode_ym2612);
+    if (n < 4u || p[1] != 0x52u || p[2] != 0x53u) return;
+    if (p[3] == 1u && n >= 9u) {                /* début */
+        uint32_t i = 9, t = 0, size = rd35(p + 4);
+        if (!size || size > VGM_MAX) { ack_cmd = 0x41; return; }
+        playing = 0; loaded = 0; ended = 0;
+        rx_size = size; rx_got = 0; rx_active = 1;
+        while (i < n && p[i] && t < sizeof title - 1u) title[t++] = (char)p[i++];
+        title[t] = 0;
+        while (i < n && p[i]) i++;
+        i++; t = 0;
+        while (i < n && p[i] && t < sizeof game - 1u) game[t++] = (char)p[i++];
+        game[t] = 0;
+        ack_cmd = 1;
+    } else if (p[3] == 2u && n >= 6u) {         /* données */
+        uint32_t seq = (uint32_t)p[4] | (uint32_t)p[5] << 7, off = seq * 512u, want, got;
+        if (!rx_active || off >= rx_size) { ack_cmd = 0x42; return; }
+        want = rx_size - off < 512u ? rx_size - off : 512u;
+        got = unpack7(p + 6, n - 6u, vgm_buf + off, want);
+        if (got < want) { ack_cmd = 0x43; return; }
+        if (off + want > rx_got) rx_got = off + want;
+        ack_seq = (int32_t)(seq & 127u);
+    } else if (p[3] == 3u && n >= 9u) {         /* fin */
+        if (!rx_active || rx_got < rx_size) { ack_cmd = 0x44; return; }
+        rx_active = 0;
+        if (rx_crc32(vgm_buf, rx_size) != rd35(p + 4)) { ack_cmd = 0x45; return; }
+        load_req = 1;                           /* la boucle principale ouvre le morceau et répond */
     }
-    opn_reg(0, 0x22, 0x00);                     /* LFO coupé */
-    opn_reg(0, 0x27, 0x00);                     /* voie 3 normale */
-    opn_reg(0, 0x2B, 0x00);                     /* DAC coupé */
-    for (v = 0; v < 6u; v++) {
-        uint32_t part = v / 3u, c = v % 3u;
-        opn_reg(part, 0xB0 + c, 3u << 3 | 4u);  /* retour 3, algorithme 4 */
-        opn_reg(part, 0xB4 + c, 0xC0);          /* gauche + droite */
-        for (o = 0; o < 4u; o++) {
-            uint32_t s = c + OP[o];
-            opn_reg(part, 0x30 + s, MUL[o]);
-            opn_reg(part, 0x40 + s, TL[o]);
-            opn_reg(part, 0x50 + s, 0x1F);      /* attaque rapide */
-            opn_reg(part, 0x60 + s, 0x05);
-            opn_reg(part, 0x70 + s, 0x02);
-            opn_reg(part, 0x80 + s, 0x26);      /* niveau de maintien 2, relâche 6 */
-            opn_reg(part, 0x90 + s, 0x00);
-        }
-    }
-}
-
-static const uint16_t FNUM[12] = {617, 653, 692, 733, 777, 823, 872, 924, 979, 1037, 1099, 1164};   /* do .. si */
-static uint8_t vnote[6], vage[6];
-static uint32_t ages;
-
-static void opn_key(uint32_t v, uint32_t on)
-{
-    opn_reg(0, 0x28, (on ? 0xF0u : 0u) | (v < 3u ? v : v + 1u));
-}
-static void note_on(uint32_t note)
-{
-    uint32_t v, pick = 0, best = 0xFFFFFFFFu, blk = note / 12u, f = FNUM[note % 12u];
-    if (blk) blk--;                             /* MIDI 60 (do 4) -> bloc 4 */
-    if (blk > 7u) blk = 7u;
-    for (v = 0; v < 6u; v++)                     /* une voie libre, sinon la plus ancienne */
-        if (!vnote[v]) { pick = v; break; }
-        else if (vage[v] < best) { best = vage[v]; pick = v; }
-    if (vnote[pick]) opn_key(pick, 0);
-    vnote[pick] = (uint8_t)note;
-    vage[pick] = (uint8_t)++ages;
-    opn_reg(pick / 3u, 0xA4 + pick % 3u, blk << 3 | f >> 8);
-    opn_reg(pick / 3u, 0xA0 + pick % 3u, f & 0xFFu);
-    opn_key(pick, 1);
-}
-static void note_off(uint32_t note)
-{
-    uint32_t v;
-    for (v = 0; v < 6u; v++)
-        if (vnote[v] == note) { opn_key(v, 0); vnote[v] = 0; }
 }
 
 /* ---- écran */
 #define C_ACC RGB(255, 165, 0)                  /* orange ROMsounds */
-#define C_TXT RGB(200, 200, 200)
-#define C_OFF RGB(90, 90, 90)
+#define C_TXT RGB(220, 220, 220)
+#define C_OFF RGB(110, 110, 110)
 #define C_BAD RGB(255, 90, 70)
 #define BUDGET_US 5805u                          /* 256 trames à 44,1 kHz */
 
@@ -205,85 +177,126 @@ static char *put_u(char *p, uint32_t v)
     return p;
 }
 static char *put_s(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+static char *put_t(char *p, uint32_t frames)    /* m:ss */
+{
+    uint32_t s = frames / 44100u;
+    p = put_u(p, s / 60u);
+    *p++ = ':';
+    *p++ = (char)('0' + s % 60u / 10u);
+    *p++ = (char)('0' + s % 10u);
+    return p;
+}
 
 static void app_idle(void) { }
 
-static void draw_stats(uint32_t avg_us, uint32_t max_us, uint32_t cuts, uint32_t chord)
+static void draw_song(void)
 {
-    char s[40], *p;
-    uint32_t pct = (avg_us * 100u + BUDGET_US / 2u) / BUDGET_US;
-    p = put_s(s, ""); p = put_u(p, pct); p = put_s(p, " %"); *p = 0;
-    draw_text_box(0, 92, 240, &FONT_L, s, pct < 70u ? C_ACC : C_BAD, 1);
-    p = put_s(s, "calcul "); p = put_u(p, avg_us); p = put_s(p, " us / "); p = put_u(p, BUDGET_US); *p = 0;
-    draw_text_box(0, 136, 240, &FONT_S, s, C_TXT, 1);
-    p = put_s(s, "max "); p = put_u(p, max_us); p = put_s(p, " us   coupures "); p = put_u(p, cuts); *p = 0;
-    draw_text_box(0, 160, 240, &FONT_S, s, C_TXT, 1);
-    draw_text_box(0, 208, 240, &FONT_S, chord ? "PLAY : accord en cours" : "PLAY : accord 6 voix", chord ? C_ACC : C_OFF, 1);
+    lcd_fill(0, 80, 240, 160, C_BLACK);
+    if (!loaded) {
+        draw_text_box(0, 96, 240, &FONT_S, rx_active ? "Reception..." : "Aucun morceau", C_TXT, 1);
+        draw_text_box(0, 120, 240, &FONT_S, rx_active ? "" : "Envoie un VGM depuis la page", C_OFF, 1);
+        return;
+    }
+    draw_text_box(0, 84, 240, &FONT_S, title[0] ? title : "(sans titre)", C_TXT, 1);
+    draw_text_box(0, 106, 240, &FONT_S, game, C_OFF, 1);
+    if (song.warn)
+        draw_text_box(0, 178, 240, &FONT_S, song.warn & VGM_W_DACSTREAM ? "flux DAC non pris en charge" : "autres puces ignorees",
+                      C_BAD, 1);
 }
 
-static void draw_engine(void)
+static void draw_time(uint32_t pct, uint32_t cuts)
 {
-    draw_text_box(0, 56, 240, &FONT_S, engine == ENG_MAME ? "YM2612 MAME  (REC : Nuked)" : "YM2612 Nuked  (REC : MAME)",
-                  C_TXT, 1);
+    char s[40], *p;
+    if (!loaded) {
+        if (rx_active && rx_size) {
+            p = put_s(s, "Reception "); p = put_u(p, rx_got * 100u / rx_size); p = put_s(p, " %"); *p = 0;
+            draw_text_box(0, 140, 240, &FONT_L, s, C_ACC, 1);
+        }
+        return;
+    }
+    {   /* après la fin, le temps reste dans la partie qui boucle */
+        uint32_t t = played;
+        if (song.total && t > song.total && song.loop_samples && song.loop_samples <= song.total)
+            t = song.total - song.loop_samples + (t - song.total) % song.loop_samples;
+        p = put_t(s, t);
+    }
+    if (song.total) { p = put_s(p, " / "); p = put_t(p, song.total); }
+    *p = 0;
+    draw_text_box(0, 136, 240, &FONT_L, s, playing ? C_ACC : C_OFF, 1);
+    p = put_s(s, "calcul "); p = put_u(p, pct); p = put_s(p, " %   coupures "); p = put_u(p, cuts); *p = 0;
+    draw_text_box(0, 200, 240, &FONT_S, s, pct < 85u ? C_OFF : C_BAD, 1);
+    draw_text_box(0, 220, 240, &FONT_S, ended ? "fin - PLAY : rejouer" : playing ? "PLAY pause  REC debut"
+                                                                              : "PLAY lecture  REC debut", C_OFF, 1);
 }
+
+#ifdef DINGHY_HOST                              /* sur PC : ROMSOUNDS_VGM=fichier.vgm joue ce fichier au démarrage */
+static void rs_host_load(void)
+{
+    const char *f = getenv("ROMSOUNDS_VGM");
+    FILE *fp = f ? fopen(f, "rb") : NULL;
+    if (!fp) return;
+    rx_size = (uint32_t)fread(vgm_buf, 1, VGM_MAX, fp);
+    fclose(fp);
+    rx_got = rx_size;
+    load_req = 1;
+    strcpy(title, "Test ROMsounds");
+    strcpy(game, "(synthese)");
+}
+#endif
 
 static void app_main(void)
 {
-    static const uint8_t CHORD[6] = {48, 55, 60, 64, 67, 72};
-    uint32_t prev = 0, k, b, rel, chord = 0, t_shown = 0, sum = 0, cnt = 0, mx = 0, max_shown = 0;
-    int32_t oct = 0;
-    uint8_t held[27] = {0};
+    uint32_t b, rel, t_shown = 0, sum = 0, cnt = 0, pct = 0, shown_rx = ~0u;
 
-    opn_setup();
     lcd_fill(0, 0, 240, 240, C_BLACK);
     draw_text_box(0, 18, 240, &FONT_L, APP_NAME, C_ACC, 1);
-    draw_engine();
-    draw_stats(0, 0, 0, 0);
+    draw_text_box(0, 56, 240, &FONT_S, "Mega Drive  v" APP_VER, C_OFF, 1);
+    draw_song();
+#ifdef DINGHY_HOST
+    rs_host_load();
+#endif
 
     for (;;) {
-        uint32_t keys;
         platform_poll();
 
-        /* calcul : un bloc dès qu'il y a la place, mesuré */
-        if (RING - (ring_w - ring_r) >= BLOCK) {
-            uint32_t t0 = fm1_ticks(), us;
+        if (load_req) {                          /* morceau reçu : l'ouvrir et répondre à la page */
+            int e;
+            load_req = 0;
+            e = vgm_open(&song, vgm_buf, rx_size);
+            if (e) { loaded = 0; ack_cmd = 0x48 + e; }
+            else { loaded = 1; song_start(); underruns = 0; ack_cmd = 3; }
+            draw_song();
+            t_shown = 0;
+        }
+        if (ack_cmd >= 0) { midi_send(0xBFu, 117u, (uint32_t)ack_cmd); ack_cmd = -1; }
+        if (ack_seq >= 0) { midi_send(0xBFu, 118u, (uint32_t)ack_seq); ack_seq = -1; }
+
+        if (RING - (ring_w - ring_r) >= BLOCK) {  /* calcul : un bloc dès qu'il y a la place, mesuré */
+            uint32_t t0 = fm1_ticks(), us, was = playing;
             render_block();
             us = (fm1_ticks() - t0) / FM1_TICKS_PER_US;
-            sum += us; cnt++;
-            if (us > mx) mx = us;
+            if (was) { sum += us; cnt++; }
         }
-
-        keys = fm1_in.notes;                    /* bit k : touche k (0 = fa 3 .. 26 = sol 5) */
-        for (k = 0; k < 27u; k++) {
-            if ((keys & ~prev) >> k & 1u) { held[k] = (uint8_t)(53 + 12 * oct + (int32_t)k); note_on(held[k]); }
-            if ((prev & ~keys) >> k & 1u) note_off(held[k]);
-            fm1_led_key(KEY_LED(k), keys >> k & 1u);
-        }
-        prev = keys;
 
         b = fm1_input_edges(&rel);
-        if (b & (1u << BTN_OCT_DOWN) && oct > -2) oct--;
-        if (b & (1u << BTN_OCT_UP) && oct < 2) oct++;
-        if (b & (1u << BTN_REC)) {                 /* autre simulation : le même son, l'accord repris s'il était tenu */
-            for (k = 0; k < 6u; k++) vnote[k] = 0;
-            engine = engine == ENG_MAME ? ENG_NUKED : ENG_MAME;
-            opn_setup();
-            if (chord) for (k = 0; k < 6u; k++) note_on(CHORD[k]);
-            draw_engine();
-            sum = cnt = mx = max_shown = 0; underruns = 0; t_shown = fm1_ms;
+        if (b & (1u << BTN_PLAY) && loaded) {
+            if (ended) song_start();
+            else playing = !playing;
+            t_shown = 0;
         }
-        if (b & (1u << BTN_PLAY)) {
-            chord = !chord;
-            for (k = 0; k < 6u; k++) { if (chord) note_on(CHORD[k]); else note_off(CHORD[k]); }
-        }
-        fm1_led_key(BTN_PLAY, chord);
-        fm1_led_key(BTN_OCT_DOWN, oct < 0);
-        fm1_led_key(BTN_OCT_UP, oct > 0);
+        if (b & (1u << BTN_REC) && loaded) { uint32_t was = playing; song_start(); playing = was; t_shown = 0; }
+        fm1_led_key(BTN_PLAY, playing);
 
-        if (fm1_ms - t_shown >= 500u && cnt) {  /* deux fois par seconde : la moyenne, le maximum depuis le départ */
-            if (mx > max_shown) max_shown = mx;
-            draw_stats(sum / cnt, max_shown, underruns, chord);
-            t_shown = fm1_ms; sum = cnt = 0; mx = 0;
+        if (rx_active) {                         /* réception : la progression, 4 fois par seconde */
+            if (shown_rx == ~0u) { draw_song(); shown_rx = 0; }
+            if (rx_got != shown_rx && fm1_ms - t_shown >= 250u) { shown_rx = rx_got; draw_time(0, 0); t_shown = fm1_ms; }
+            continue;
+        }
+        if (shown_rx != ~0u) { shown_rx = ~0u; draw_song(); }
+        if (fm1_ms - t_shown >= 500u) {          /* deux fois par seconde */
+            if (cnt) pct = (sum / cnt * 100u + BUDGET_US / 2u) / BUDGET_US;
+            draw_time(pct, underruns);
+            t_shown = fm1_ms; sum = cnt = 0;
         }
     }
 }

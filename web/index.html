@@ -51,6 +51,17 @@
   </section>
 
   <section>
+    <h2>Lecteur Mega Drive</h2>
+    <p class="sub" style="margin:0 0 10px">Avec ROMsounds sur le FM-1 : choisis un fichier VGM (ou VGZ) de musique Mega Drive, puis envoie-le. Le FM-1 le joue aussitôt (300 Ko au plus).</p>
+    <div class="row">
+      <input type="file" id="vgmFile" accept=".vgm,.vgz" class="grow">
+      <button id="vgmSend" disabled>Envoyer au FM-1</button>
+    </div>
+    <progress id="vgmBar" max="100" value="0" hidden></progress>
+    <pre id="vgmLog">Aucun fichier.</pre>
+  </section>
+
+  <section>
     <h2>Installer un firmware</h2>
     <label class="ok" style="margin:0 0 12px"><input type="checkbox" id="okBox"> <span>J’ai compris : l’installation remplace le firmware en place et efface ce qu’il a enregistré. Ne rien débrancher pendant l’écriture.</span></label>
     <p class="hint" id="hint">Coche la case ci-dessus pour activer les boutons « Installer ».</p>
@@ -76,6 +87,7 @@
 </main>
 
 <script src="fm1ota.js"></script>
+<script src="romsounds.js"></script>
 <script>
 (() => {
 'use strict';
@@ -178,6 +190,7 @@ function ready() {
   document.querySelectorAll('[data-fw]').forEach(b => { b.disabled = busy || !okBox.checked || !b.dataset.ready; });
   $('fileInstall').disabled = busy || !okBox.checked || !filePkg;
   file.disabled = busy; $('detect').disabled = busy;
+  $('vgmSend').disabled = busy || !vgm; $('vgmFile').disabled = busy;
   $('hint').hidden = okBox.checked;
 }
 
@@ -256,6 +269,90 @@ for (const fw of CATALOG) {
     .then(j => { fw.latest = j; info.textContent = j.product + ' · ' + j.commit + ' du ' + when(j.date) + (j.message ? ' · ' + j.message : ''); btn.dataset.ready = '1'; ready(); })
     .catch(e => { info.textContent = 'Indisponible (' + e.message + ').'; });
 }
+
+/* ---------- Lecteur Mega Drive : envoyer un VGM à ROMsounds (protocole : firmware/src/romsounds.c) ---------- */
+const { VGM_MAX, VGM_ERR, parseVgm, vgmFrames } = RSVGM;
+const mmss = n => Math.floor(n / 60) + ':' + String(Math.floor(n % 60)).padStart(2, '0');
+let vgm = null;
+async function readVgm(f) {
+  let u = new Uint8Array(await f.arrayBuffer());
+  if (u[0] === 0x1F && u[1] === 0x8B) {        // .vgz : gzip
+    if (typeof DecompressionStream === 'undefined') throw new Error('ce navigateur ne sait pas décompresser un .vgz : utilise un .vgm');
+    u = new Uint8Array(await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+  }
+  return parseVgm(u);
+}
+
+$('vgmFile').addEventListener('change', async () => {
+  const f = $('vgmFile').files && $('vgmFile').files[0];
+  vgm = null; $('vgmBar').hidden = true;
+  if (!f) { $('vgmLog').textContent = 'Aucun fichier.'; ready(); return; }
+  try {
+    const v = await readVgm(f);
+    const lines = [(v.title || f.name) + (v.game ? ' — ' + v.game : ''), (v.system ? v.system + ' · ' : '') + (v.author || '')];
+    lines.push('Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489'].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
+    lines.push('Durée : ' + mmss(v.total / 44100) + (v.loop ? ' (boucle de ' + mmss(v.loop / 44100) + ')' : '') + ' · ' + kb(v.body.length));
+    if (!v.ym && !v.sn) throw new Error('ni YM2612 ni SN76489 : ce n’est pas une musique Mega Drive / Master System');
+    if (v.body.length > VGM_MAX) throw new Error('trop gros pour le FM-1 (' + kb(v.body.length) + ', 300 Ko au plus)');
+    vgm = v;
+    $('vgmLog').textContent = lines.filter(Boolean).join('\n');
+  } catch (e) { $('vgmLog').textContent = 'Fichier refusé : ' + (e.message || e); }
+  ready();
+});
+
+async function sendVgm() {
+  if (!vgm || busy) return;
+  const log = t => { $('vgmLog').textContent = t; };
+  let acc;
+  try { acc = await midi(); } catch (e) { log(e.message); return; }
+  busy = true; ready();
+  const bar = $('vgmBar'); bar.hidden = false; bar.value = 0;
+  let dev = null, onMsg = null;
+  try {
+    const up = new FM1OTA.Updater(acc);
+    log('Recherche du FM-1…');
+    dev = await up.find(id => !id.loader && /^FM-1_95\d$/.test(id.text));
+    if (!dev) throw new Error('ROMsounds ne répond pas : installe ROMsounds sur le FM-1 (plus bas), puis recommence.');
+    const acks = [];
+    let wake = null;
+    onMsg = m => { const d = m.data; if (d.length === 3 && d[0] === 0xBF && (d[1] === 117 || d[1] === 118)) { acks.push([d[1], d[2]]); if (wake) wake(); } };
+    dev.link.input.addEventListener('midimessage', onMsg);
+    const waitAck = async (cc, ok, ms) => {
+      const end = Date.now() + ms;
+      for (;;) {
+        const i = acks.findIndex(a => a[0] === 117 && a[1] >= 0x40 || a[0] === cc && ok(a[1]));
+        if (i >= 0) { const a = acks.splice(0, i + 1).pop(); if (a[0] === 117 && a[1] >= 0x40) throw new Error(VGM_ERR[a[1]] || 'refusé (' + a[1] + ')'); return a[1]; }
+        const left = end - Date.now();
+        if (left <= 0) return null;
+        await new Promise(r => { wake = r; setTimeout(r, left); });
+        wake = null;
+      }
+    };
+    const send = arr => { if (!dev.link.send(arr)) throw new Error('le FM-1 a été déconnecté'); };
+    const fr = vgmFrames(vgm.body, vgm.title, vgm.game, FM1OTA.pack7);
+    acks.length = 0;
+    send(fr.begin);
+    if (await waitAck(117, v => v === 1, 2000) === null) throw new Error('le FM-1 ne répond pas au début de l’envoi');
+    const n = fr.data.length, t0 = Date.now();
+    for (let seq = 0; seq < n; seq++) {
+      const frame = fr.data[seq];
+      let got = null;
+      for (let tries = 0; tries < 4 && got === null; tries++) { send(frame); got = await waitAck(118, v => v === (seq & 127), 1000); }
+      if (got === null) throw new Error('le FM-1 ne répond plus (bloc ' + seq + ' sur ' + n + ')');
+      bar.value = Math.floor((seq + 1) * 100 / n);
+      if (seq % 8 === 0) log('Envoi : ' + bar.value + ' % (' + kb((seq + 1) * 512) + ' sur ' + kb(vgm.body.length) + ')');
+    }
+    send(fr.end);
+    if (await waitAck(117, v => v === 3, 8000) === null) throw new Error('le FM-1 n’a pas confirmé la fin de l’envoi');
+    log('Envoyé en ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s : le FM-1 joue « ' + (vgm.title || 'le morceau') + ' ».\nPLAY : pause / lecture · REC : revenir au début.');
+  } catch (e) {
+    log('Échec : ' + (e.message || e));
+  } finally {
+    if (dev) { if (onMsg) dev.link.input.removeEventListener('midimessage', onMsg); dev.link.close(); }
+    busy = false; ready();
+  }
+}
+$('vgmSend').addEventListener('click', sendVgm);
 
 file.addEventListener('change', async () => {
   filePkg = null; bar.hidden = true;
