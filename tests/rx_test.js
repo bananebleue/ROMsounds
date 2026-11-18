@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// ROMsounds : la page prépare un VGM pour le FM-1 (web/romsounds.js : RSM5) et le découpe en SysEx (+ pack7 de
-// fm1ota.js) ; fm1/tests/rx_test.c relit les SysEx avec le code du firmware (fm1/firmware/src/rx.h) : le RSM5 doit
-// revenir à l'identique. Le RSM5 sert aussi au lecteur sur PC (ROMSOUNDS_RSM).
+// ROMsounds : la page prépare un VGM pour le FM-1 (web/romsounds.js : RSM6) et le découpe en SysEx (+ pack7 de
+// fm1ota.js) ; fm1/tests/rx_test.c relit les SysEx avec le code du firmware (fm1/firmware/src/rx.h) : le RSM6 doit
+// revenir à l'identique. Le RSM6 sert aussi au lecteur sur PC (ROMSOUNDS_RSM).
 //   node tests/rx_test.js FICHIER.vgm SORTIE.syx SORTIE.rsm
 'use strict';
 const fs = require('fs');
@@ -14,7 +14,7 @@ const O = require('../web/fm1ota.js'), R = require('../web/romsounds.js');
   for (const f of all) if (f.length - 2 > 640 || f.slice(1, -1).some(b => b > 127)) { console.error('trame invalide'); process.exit(1); }
   fs.writeFileSync(process.argv[3], Buffer.from(all.flat()));
   fs.writeFileSync(process.argv[4], v.blob);
-  console.log('VGM ' + v.raw + ' octets -> RSM5 ' + v.blob.length + ' (PCM ' + v.pcmLen + ', A ' + v.aLen + ', B ' + v.bLen + ') -> '
+  console.log('VGM ' + v.raw + ' octets -> RSM6 ' + v.blob.length + ' (PCM ' + v.pcmLen + ', A ' + v.aLen + ', B ' + v.bLen + ') -> '
     + all.length + ' SysEx (le plus long : ' + Math.max(...all.map(f => f.length)) + ' octets)');
   if (v.blob.length > R.VGM_MAX) { console.error('trop gros pour le FM-1'); process.exit(1); }
 })().catch(e => { console.error(e); process.exit(1); });

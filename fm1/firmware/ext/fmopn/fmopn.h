@@ -180,11 +180,8 @@ void ym2610b_update_one(void *chip, UINT32 length, DEV_SMPL **buffer);
 void ym2610_write(void *chip, UINT8 a, UINT8 v);
 UINT8 ym2610_read(void *chip, UINT8 a);
 UINT8 ym2610_timer_over(void *chip, UINT8 c );
-void ym2610_alloc_pcmroma(void* chip, UINT32 memsize);
-void ym2610_write_pcmroma(void* chip, UINT32 offset, UINT32 length, const UINT8* data);
-void ym2610_alloc_pcmromb(void* chip, UINT32 memsize);
-void ym2610_write_pcmromb(void* chip, UINT32 offset, UINT32 length, const UINT8* data);
 
+void ym2610_set_roms(void* chip, const UINT8* rom_a, UINT32 len_a, const UINT8* rom_b, UINT32 len_b);
 void ym2610_set_mute_mask(void *chip, UINT32 MuteMask);
 void ym2610_set_log_cb(void* chip, DEVCB_LOG func, void* param);
 #endif /* (BUILD_YM2610||BUILD_YM2610B) */

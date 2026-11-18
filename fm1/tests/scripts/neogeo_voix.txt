@@ -1,0 +1,6 @@
+# ROMsounds, Neo-Geo : FM 1 (touche 0) puis ADPCM-A 1 (touche 4) coupées, sur build/neogeo.rsm
+0 keys 0x01
+100 keys 0
+1500 keys 0x10
+1600 keys 0
+6100 end

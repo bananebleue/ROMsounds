@@ -10,11 +10,14 @@
  *   ay : un morceau YM2149 (Atari ST, 2 MHz) : voie A, voie B en enveloppe, bruit sur C, puis les trois (boucle), 5 s
  *   opl : un morceau OPL2 / AdLib (YM3812, 3,58 MHz) : sinus 440 Hz, FM 880 Hz, percussions, puis un accord (boucle), 5 s
  *   opl3 : le même pour un OPL3 (YMF262, 14,3 MHz, banque 0, stéréo) : la page le joue en OPL2, même son
+ *   neogeo : un morceau YM2610 (Neo-Geo, 8 MHz) : FM 440 Hz, SSG 1 kHz, ADPCM-A (500 Hz, à 1 Mo dans une ROM de 2 Mo
+ *            pleine d'octets inutiles), ADPCM-B (926 Hz, en boucle), puis le tout (boucle), 6 s
  *   nes : un morceau NES (2 carrées dont une qui balaye, triangle, bruit, DPCM), 6 s, boucle sur les 2 dernières
  * Déroulé (secondes) : 0-2 accord FM, 2-3 PSG seul (3 voies), 3-4 bruit, 4-5 DAC (une rampe), puis boucle sur le PSG. */
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 
 static uint8_t buf[1 << 21];
 static uint32_t n = 0x40;
@@ -136,6 +139,100 @@ static int opl2(const char *path)
     return finish(path, "OPL2", loop_at, 88200);
 }
 
+/* YM2610 : FM (comme le YM2612, voie 1), SSG (registres 0-15 du port 0), ADPCM-A (port 1), ADPCM-B (port 0, 0x10-0x1B) */
+static void nb(uint32_t port, uint32_t reg, uint32_t val) { b(0x58 + port); b(reg); b(val); }
+static int jedi[49 * 16];
+static uint32_t adpcm_a(uint8_t *out, uint32_t ns, double hz, double amp, int noise)   /* codeur ADPCM-A (glouton) */
+{
+    static const int steps[49] = {16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130,
+        143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282,
+        1411, 1552};
+    static const int inc[8] = {-16, -16, -16, -16, 32, 80, 112, 144};
+    int acc = 0, st = 0, k, nib, best, bv;
+    uint32_t i, seed = 1;
+    for (k = 0; k < 49 * 16; k++) { int v = (2 * (k & 7) + 1) * steps[k >> 4] / 8; jedi[k] = k & 8 ? -v : v; }
+    for (i = 0; i < ns; i++) {
+        int x;
+        if (noise) { seed = seed * 1103515245u + 12345u; x = (int)((seed >> 16 & 2047) - 1024) * (int)(ns - i) / (int)ns; }
+        else x = (int)(amp * sin(2 * M_PI * hz * i / 18518.5));
+        best = 0; bv = 1 << 30;
+        for (nib = 0; nib < 16; nib++) { int a = acc + jedi[st + nib], d = a > x ? a - x : x - a; if (a > 2047 || a < -2048) continue; if (d < bv) { bv = d; best = nib; } }
+        acc += jedi[st + best]; st += inc[best & 7]; if (st < 0) st = 0; if (st > 48 * 16) st = 48 * 16;
+        if (i & 1) out[i >> 1] |= (uint8_t)best; else out[i >> 1] = (uint8_t)(best << 4);
+    }
+    return (ns + 1) / 2;
+}
+static uint32_t adpcm_b(uint8_t *out, uint32_t ns, double hz, double rate, double amp)   /* codeur ADPCM-B (delta-T, glouton) */
+{
+    static const int B1[16] = {1, 3, 5, 7, 9, 11, 13, 15, -1, -3, -5, -7, -9, -11, -13, -15};
+    static const int B2[16] = {57, 57, 57, 57, 77, 102, 128, 153, 57, 57, 57, 57, 77, 102, 128, 153};
+    int acc = 0, d = 127, nib, best, bv;
+    uint32_t i;
+    for (i = 0; i < ns; i++) {
+        int x = (int)(amp * sin(2 * M_PI * hz * i / rate));
+        best = 0; bv = 1 << 30;
+        for (nib = 0; nib < 16; nib++) { int a = acc + B1[nib] * d / 8, e; if (a > 32767) a = 32767; if (a < -32768) a = -32768; e = a > x ? a - x : x - a; if (e < bv) { bv = e; best = nib; } }
+        acc += B1[best] * d / 8; if (acc > 32767) acc = 32767; if (acc < -32768) acc = -32768;
+        d = d * B2[best] / 64; if (d < 127) d = 127; if (d > 24576) d = 24576;
+        if (i & 1) out[i >> 1] |= (uint8_t)best; else out[i >> 1] = (uint8_t)(best << 4);
+    }
+    return (ns + 1) / 2;
+}
+static void rom_block(uint32_t type, uint32_t rom_size, uint32_t at, const uint8_t *d, uint32_t len)
+{
+    uint32_t i;
+    b(0x67); b(0x66); b(type); b((len + 8) & 255); b((len + 8) >> 8 & 255); b((len + 8) >> 16 & 255); b((len + 8) >> 24);
+    b(rom_size & 255); b(rom_size >> 8 & 255); b(rom_size >> 16 & 255); b(rom_size >> 24);
+    b(at & 255); b(at >> 8 & 255); b(at >> 16 & 255); b(at >> 24);
+    for (i = 0; i < len; i++) b(d[i]);
+}
+static void nb_a(uint32_t ch, uint32_t start, uint32_t end)   /* ADPCM-A : voie ch, de start à end (octets), puis départ */
+{
+    nb(1, 0x08 + ch, 0xDF); nb(1, 0x10 + ch, start >> 8 & 255); nb(1, 0x18 + ch, start >> 16);
+    nb(1, 0x20 + ch, (end - 1) >> 8 & 255); nb(1, 0x28 + ch, (end - 1) >> 16); nb(1, 0x00, 1u << ch);
+}
+static int neogeo(const char *path)
+{
+    static uint8_t smp[65536], junk[65536];
+    uint32_t i, loop_at, la, lb, ln;
+    n = 0x100; w32(0x08, 0x171); w32(0x34, 0x100 - 0x34); w32(0x4C, 8000000);
+    for (i = 0; i < sizeof junk; i++) junk[i] = (uint8_t)(i * 37 + (i >> 8));
+    la = adpcm_a(smp, 9259, 18518.5 / 37, 1400, 0); la = (la + 255) & ~255u;
+    rom_block(0x82, 0x200000, 0x180000, junk, sizeof junk);                       /* des octets que rien ne joue */
+    rom_block(0x82, 0x200000, 0x100000, smp, la);                                 /* le sinus, à 1 Mo */
+    ln = adpcm_a(smp, 3704, 0, 0, 1); ln = (ln + 255) & ~255u;
+    rom_block(0x82, 0x200000, 0x000200, smp, ln);                                 /* un bruit qui décroît (0,2 s) */
+    lb = adpcm_b(smp, 11111, 18518.5 / 20, 18518.5, 12000); lb = (lb + 255) & ~255u;
+    rom_block(0x83, 0x100000, 0x040000, smp, lb);                                 /* ADPCM-B : sinus 926 Hz */
+    rom_block(0x83, 0x100000, 0x080000, junk, 4096);
+    /* FM : voie 1 (registres de la voie 1 du port 0), un sinus à 440 Hz */
+    nb(0, 0x22, 0); nb(0, 0x27, 0); nb(0, 0xB1, 7); nb(0, 0xB5, 0xC0);
+    for (i = 0; i < 4; i++) {
+        uint32_t s2 = 1 + (i == 1 ? 8 : i == 2 ? 4 : i == 3 ? 12 : 0);
+        nb(0, 0x30 + s2, 1); nb(0, 0x40 + s2, i == 3 ? 0x08 : 0x7F); nb(0, 0x50 + s2, 0x1F);
+        nb(0, 0x60 + s2, 0); nb(0, 0x70 + s2, 0); nb(0, 0x80 + s2, 0x0F); nb(0, 0x90 + s2, 0);
+    }
+    nb(0, 0xA5, 4 << 3 | 1038 >> 8); nb(0, 0xA1, 1038 & 255); nb(0, 0x28, 0xF1);
+    wait(44100);
+    nb(0, 0x28, 0x01);
+    nb(0, 0x00, 125); nb(0, 0x01, 0); nb(0, 0x08, 15); nb(0, 0x07, 0x3E);          /* SSG A : 1 kHz */
+    wait(44100);
+    nb(0, 0x08, 0); nb(0, 0x07, 0x3F);
+    nb(1, 0x01, 0x3F);                                                            /* ADPCM-A : volume général au plus */
+    nb_a(0, 0x100000, 0x100000 + la); wait(22050);
+    nb_a(0, 0x100000, 0x100000 + la); nb_a(1, 0x200, 0x200 + ln); wait(22050);
+    nb(0, 0x11, 0xC0);
+    nb(0, 0x12, 0x40000 >> 8 & 255); nb(0, 0x13, 0x40000 >> 16); nb(0, 0x14, (0x40000 + lb - 1) >> 8 & 255); nb(0, 0x15, (0x40000 + lb - 1) >> 16);
+    nb(0, 0x19, 0x55); nb(0, 0x1A, 0x55); nb(0, 0x1B, 0xFF); nb(0, 0x10, 0x90);    /* ADPCM-B : départ, en boucle */
+    wait(44100);
+    nb(0, 0x10, 0x01); nb(0, 0x10, 0x00);
+    loop_at = n;
+    nb(0, 0x28, 0xF1); nb(0, 0x08, 12); nb(0, 0x07, 0x3E);
+    for (i = 0; i < 4; i++) { nb_a(0, 0x100000, 0x100000 + la); wait(22050); }
+    nb(0, 0x28, 0x01); nb(0, 0x08, 0); nb(0, 0x07, 0x3F);
+    return finish(path, "Neo-Geo", loop_at, 88200);
+}
+
 static int nes(const char *path)
 {
     uint32_t i, at, loop_at;
@@ -178,6 +275,7 @@ int main(int argc, char **argv)
     if (argc > 2 && !strcmp(argv[2], "nes")) return nes(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "ay")) return ym2149(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "opl")) return opl2(argv[1]);
+    if (argc > 2 && !strcmp(argv[2], "neogeo")) return neogeo(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "opl3")) { opl3_mode = 1; return opl2(argv[1]); }
     if (argc > 2 && !strcmp(argv[2], "gg")) {              /* gg : Game Gear (SN76489 seul, stéréo 0x4F), 4 s */
         w32(0x08, 0x151); w32(0x0C, 3579545); w32(0x34, 0x40 - 0x34);

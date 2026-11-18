@@ -3,7 +3,7 @@
 Extracteur de musiques de ROM de vieux jeux (Game Boy, Mega Drive, Super Nintendo…) et firmware lecteur pour le
 synthé M-VAVE FM-1. Fiche du projet : `bananebleue/Clodio`, `projets/extracteur-musiques-rom.md` (ticket #1).
 
-## État : lecteur Mega Drive, Master System, Game Gear, Game Boy, NES, Atari ST, Amiga, PC AdLib
+## État : lecteur Mega Drive, Master System, Game Gear, Game Boy, NES, Atari ST, Amiga, Neo-Geo, PC AdLib
 
 Le firmware ROMsounds joue des musiques au format **VGM** : la page (section « Lecteur ») lit un fichier `.vgm` ou
 `.vgz`, le prépare (banque d'échantillons à part, musique compressée, flux DAC convertis) et l'envoie au FM-1 par USB.
@@ -17,6 +17,11 @@ Le FM-1 le joue aussitôt et le **garde en mémoire flash** (bibliothèque d'env
 - AY-3-8910 / YM2149 (`ay_apu.h`, d'après emu2149) : Atari ST, Amstrad CPC, ZX Spectrum ; VGM (0xA0) ou fichiers .ym
   (YM2!, YM3!, YM3b, YM5!, YM6!, compressés LHA), convertis par la page ; à 2 % de libvgm. Pas encore : SNDH, effets
   spéciaux des YM5/6 (digidrums, voix SID).
+- Neo-Geo : YM2610 / YM2610B (FM 4 ou 6 voies, ADPCM-A 6 voies, ADPCM-B) avec `fmopn.c` et `ymdeltat.c` de MAME
+  (via libvgm, GPL-2.0+), sans allocation ni virgule flottante ; la puce occupe la même place en RAM que le YM2612 ; le
+  SSG passe par `ay_apu.h` (YM2149 à horloge / 4). Les ROM ADPCM (souvent des Mo) sont ramenées par la page aux
+  échantillons joués : départs relevés, pages de 256 octets mises bout à bout, adresses réécrites avant chaque départ
+  (« RSM6 »). À 0,1-2 % de libvgm sur le morceau de test ; coût sur PC inférieur au YM2612 (4 voies FM).
 - OPL2 / OPL (YM3812, YM3526 : AdLib, Sound Blaster, arcade Toaplan…) : `fmopl.c` de MAME (via libvgm, GPL-2.0+,
   `firmware/ext/fmopl`, tables précalculées par `tools/gen_fmopl_tables.c`), à sa fréquence native (horloge / 72) ;
   9 voies + percussions ; ~1,3 fois le coût du YM2612 sur PC, d'où la hauteur limitée à +1 demi-ton. Niveaux des

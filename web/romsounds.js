@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * ROMsounds : lire un fichier VGM (en-tête, étiquettes GD3), le préparer pour le FM-1 et le découper en SysEx.
- * Ce que reçoit le FM-1 (« RSM5 », firmware/src/romsounds.c) :
- *   en-tête de 72 octets : "RSM5", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
+ * Ce que reçoit le FM-1 (« RSM6 », firmware/src/romsounds.c) :
+ *   en-tête de 88 octets : "RSM6", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
  *   parties, avertissements, bruit du SN76489 (rebouclage | largeur << 16), horloges Game Boy et NES, tempo (BPM x 100, deviné :
- *   beatsOf) et position du premier temps (trames), horloge et type de l'AY-3-8910 / YM2149, horloge et type de l'OPL (1 : YM3812, 2 : YM3526) ; puis la banque
+ *   beatsOf) et position du premier temps (trames), horloge et type de l'AY-3-8910 / YM2149, horloge et type de l'OPL (1 : YM3812, 2 : YM3526), horloge et type du YM2610 (bit 0 : YM2610B), taille de
+ *   l'ADPCM-A dans la banque ; puis la banque
  *   d'échantillons (brute : pour le YM2612, toutes les données de type 0 bout à bout ; pour la NES, l'image de sa mémoire
- *   $8000-$FFFF, que lit le DMC), puis les commandes
+ *   $8000-$FFFF, que lit le DMC ; pour le YM2610, les échantillons ADPCM-A puis ADPCM-B réellement joués), puis les commandes
  *   avant la boucle (A) et à partir de la boucle (B), chacune compressée (deflate brut). Le FM-1 garde le tout compressé
  *   et décompresse en jouant ; à la fin de B, il reprend B : la boucle ne demande aucun retour en arrière.
  * Utilisé par index.html (navigateur) et tests/rx_test.js (Node). */
@@ -19,7 +20,7 @@ const VGM_ERR = { 0x41: 'fichier trop gros pour le FM-1', 0x42: 'données hors d
   0x47: 'attribution refusée par le FM-1', 0x48: 'le FM-1 n’a pas pu l’enregistrer (mémoire flash)' };
 const LIB_MAX = 40;                      // morceaux au plus dans la bibliothèque du FM-1 (firmware : LIB_MAX)
 // horloges des autres puces dans l'en-tête (spécification VGM 1.71)
-const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x4C, 0x58, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
+const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x58, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
 const rd32 = (u, i) => (u[i] | u[i + 1] << 8 | u[i + 2] << 16 | u[i + 3] << 24) >>> 0;
 // l'écran du FM-1 n'a que l'ASCII : accents retirés, le reste remplacé par « ? »
 const ascii = t => (t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x20-\x7E]/g, '?').trim().slice(0, 28);
@@ -40,6 +41,7 @@ function parseVgm(u) {
   const fds = head >= 0x88 && (rd32(u, 0x84) & 0x80000000) !== 0;
   const ay = head >= 0x78 ? rd32(u, 0x74) & 0x3FFFFFFF : 0, ayType = ay && head >= 0x79 ? u[0x78] : 0;
   const opl2 = head >= 0x54 ? rd32(u, 0x50) & 0x3FFFFFFF : 0, opl1 = head >= 0x58 ? rd32(u, 0x54) & 0x3FFFFFFF : 0;
+  const nbRaw = head >= 0x50 ? rd32(u, 0x4C) : 0, opnb = nbRaw & 0x3FFFFFFF, opnbType = nbRaw & 0x80000000 ? 1 : 0;   // YM2610 (Neo-Geo)
   const opl3 = !opl2 && !opl1 && head >= 0x60 ? rd32(u, 0x5C) & 0x3FFFFFFF : 0;   // OPL3 (Sound Blaster 16) : joué en OPL2
   const opl = opl2 || opl1 || Math.round(opl3 / 4), oplType = opl2 || opl3 ? 1 : opl1 ? 2 : 0;
   const start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
@@ -56,12 +58,13 @@ function parseVgm(u) {
   if ((head >= 0x54 && rd32(u, 0x50) & 0x40000000) || (opl3 && rd32(u, 0x5C) & 0x40000000) || (opl2 && opl1)) others = true;   // (une seule puce OPL)
   if ((opl2 || opl1) && head >= 0x60 && rd32(u, 0x5C) & 0x3FFFFFFF) others = true;
   const body = u.subarray(0, gd3 > start ? gd3 : u.length);
-  if (!ym && !sn && !gb && !nes && !ay && !opl) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES, AY / YM2149, AdLib)');
-  if (ym && opl) others = true;                  // (le FM-1 ne joue qu'une puce FM : le YM2612)
+  if (!ym && !sn && !gb && !nes && !ay && !opl && !opnb) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES, AY / YM2149, AdLib, Neo-Geo)');
+  if (ym && opl) others = true;
+  if ((ym && opnb) || (nbRaw & 0x40000000)) others = true;   // (une puce FM : le YM2612 d'abord ; un seul YM2610)                  // (le FM-1 ne joue qu'une puce FM : le YM2612)
   if (fds) others = true;                        // (le FDS de la NES : pas encore)
-  return { body, ym, sn, gb, nes, ay, ayType, opl, oplType, opl3, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
+  return { body, ym, sn, gb, nes, ay, ayType, opl, oplType, opl3, opnb: ym ? 0 : opnb, opnbType, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
            title: ascii(tags[0] || tags[1]), game: ascii(tags[2] || tags[3]), system: tags[4] || '', author: tags[6] || '',
-           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : opl3 ? 'PC (Sound Blaster 16)' : opl ? 'PC (AdLib)' : gb ? 'Game Boy' : nes ? 'NES' : ay ? (ayType & 0xF0 ? 'YM2149' : 'AY-3-8910') : 'SN76489') };
+           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : opnb ? 'Neo-Geo' : opl3 ? 'PC (Sound Blaster 16)' : opl ? 'PC (AdLib)' : gb ? 'Game Boy' : nes ? 'NES' : ay ? (ayType & 0xF0 ? 'YM2149' : 'AY-3-8910') : 'SN76489') };
 }
 
 // longueur d'une commande VGM à la position p (spécification 1.71) ; 0 : fin
@@ -99,7 +102,9 @@ function beatsOf(u, start) {
     else if (c === 0x63) t += 882;
     else if (c >= 0x70 && c <= 0x7F) t += (c & 15) + 1;
     else if (c >= 0x80 && c <= 0x8F) t += c & 15;
-    else if (c === 0x52 && u[p + 1] === 0x28 && (u[p + 2] & 0xF0)) hit(1);
+    else if ((c === 0x52 || c === 0x58) && u[p + 1] === 0x28 && (u[p + 2] & 0xF0)) hit(1);
+    else if (c === 0x59 && u[p + 1] === 0x00 && !(u[p + 2] & 0x80) && (u[p + 2] & 0x3F)) hit(1.5);   // ADPCM-A (Neo-Geo)
+    else if (c === 0x58 && u[p + 1] === 0x10 && (u[p + 2] & 0x80)) hit(1);                            // ADPCM-B
     else if (c === 0xE0 || c === 0x95) hit(1.5);
     else if (c === 0x50) {
       const d = u[p + 1];
@@ -113,8 +118,8 @@ function beatsOf(u, start) {
     } else if ((c === 0x5A || c === 0x5B || c === 0x5E) && u[p + 1] === 0xBD) {                     // OPL : percussions frappées
       const v = u[p + 2] & 0x1F; if ((u[p + 2] & 0x20) && (v & ~bd)) hit(v & 0x10 ? 1.5 : 1); bd = u[p + 2] & 0x20 ? v : 0;
     }
-    else if (c === 0xA0 && (u[p + 1] & 0x7F) === 13) hit(1);                     // AY : enveloppe relancée
-    else if (c === 0xA0 && (u[p + 1] & 0x7F) >= 8 && (u[p + 1] & 0x7F) <= 10) {  // AY : volume qui monte
+    else if ((c === 0xA0 || (c === 0x58 && u[p + 1] < 16)) && (u[p + 1] & 0x7F) === 13) hit(1);   // AY, SSG : enveloppe relancée
+    else if ((c === 0xA0 || (c === 0x58 && u[p + 1] < 16)) && (u[p + 1] & 0x7F) >= 8 && (u[p + 1] & 0x7F) <= 10) {   // volume qui monte
       const ch = (u[p + 1] & 0x7F) - 8, v = u[p + 2] & 31; if ((v & 16) || v >= (ayv[ch] & 15) + 4) hit(1); ayv[ch] = v;
     }
     p += k;
@@ -215,12 +220,57 @@ function opl3to2(c, r, d) {
   return [Uint8Array.of(0x5A, r, d), false];
 }
 
+/* YM2610 (Neo-Geo) : les ROM ADPCM (souvent plusieurs Mo) ramenées aux échantillons joués. On relève, à chaque départ
+ * d'une voix ADPCM-A (port 1, registre 0) ou de l'ADPCM-B (port 0, registre 0x10, bit 7), les adresses de début et de fin
+ * (pages de 256 octets) ; les pages jouées sont mises bout à bout, et les adresses réécrites juste avant chaque départ
+ * (les écritures d'origine sont retirées). Rend { a, b, mapA, mapB, romA, romB } (romX : taille d'origine). */
+function opnbTrim(u, start, blocks) {
+  const shA = new Uint8Array(0x30), shB = new Uint8Array(0x16), used = { 0x82: [], 0x83: [] };
+  for (let p = start; p < u.length;) {
+    const n = cmdLen(u, p), c = u[p];
+    if (!n || p + n > u.length) break;
+    if (c === 0x59 && u[p + 1] < 0x30) {
+      const r = u[p + 1], v = u[p + 2];
+      if (r === 0 && !(v & 0x80)) {
+        for (let ch = 0; ch < 6; ch++) if (v >> ch & 1) {
+          const s = shA[0x18 + ch] << 8 | shA[0x10 + ch], e = shA[0x28 + ch] << 8 | shA[0x20 + ch];
+          used[0x82].push([s, Math.max(s, e)]);
+        }
+      } else shA[r] = v;
+    } else if (c === 0x58 && u[p + 1] >= 0x10 && u[p + 1] <= 0x15) {
+      const r = u[p + 1], v = u[p + 2];
+      if (r === 0x10 && (v & 0x80)) { const s = shB[0x13] << 8 | shB[0x12], e = shB[0x15] << 8 | shB[0x14]; used[0x83].push([s, Math.max(s, e)]); }
+      shB[r] = v;
+    }
+    p += n;
+  }
+  const out = {};
+  for (const t of [0x82, 0x83]) {
+    const bl = blocks.filter(x => x.type === t);
+    const romSize = bl.reduce((m, x) => Math.max(m, x.romSize, x.at + x.data.length), 0);
+    const iv = used[t].filter(([s]) => s * 256 < romSize).map(([s, e]) => [s, Math.min(e, Math.ceil(romSize / 256) - 1)]).sort((x, y) => x[0] - y[0]);
+    const merged = [];
+    for (const [s, e] of iv) { const l = merged[merged.length - 1]; if (l && s <= l[1] + 1) l[1] = Math.max(l[1], e); else merged.push([s, e]); }
+    let pages = 0;
+    const map = merged.map(([s, e]) => { const m = { s, e, to: pages }; pages += e - s + 1; return m; });
+    const rom = new Uint8Array(pages * 256).fill(0xFF);
+    for (const m of map) for (const x of bl) {           // les blocs de données qui recouvrent la plage
+      const lo = Math.max(m.s * 256, x.at), hi = Math.min((m.e + 1) * 256, x.at + x.data.length);
+      if (lo < hi) rom.set(x.data.subarray(lo - x.at, hi - x.at), m.to * 256 + lo - m.s * 256);
+    }
+    const f = pg => { for (const m of map) if (pg >= m.s && pg <= m.e) return m.to + pg - m.s; return 0xFFFF; };
+    if (t === 0x82) { out.a = rom; out.mapA = f; out.romA = romSize; } else { out.b = rom; out.mapB = f; out.romB = romSize; }
+  }
+  return out;
+}
+
 async function packVgm(u) {
   const v = parseVgm(u);
   const ver = rd32(u, 8), start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
   const loop = rd32(u, 0x1C) ? 0x1C + rd32(u, 0x1C) : 0;
   const pcm = [], a = [], b = [], blocks = [];
   let nesMem = null;
+  const romBlocks = [];
   let p = start, dacStream = false, others = false, bankLen = 0;
   for (let q = start; q < u.length;) {            // d'abord la banque PCM (les flux DAC la lisent)
     const n = cmdLen(u, q);
@@ -231,6 +281,8 @@ async function packVgm(u) {
       if (!nesMem) nesMem = new Uint8Array(0x8000);
       for (let i = 0; i < n - 9; i++) if (at + i >= 0x8000 && at + i <= 0xFFFF) nesMem[at + i - 0x8000] = u[q + 9 + i];
     }
+    if (u[q] === 0x67 && (u[q + 2] === 0x82 || u[q + 2] === 0x83) && n >= 15)   // YM2610 : ROM ADPCM-A, ADPCM-B
+      romBlocks.push({ type: u[q + 2], romSize: rd32(u, q + 7), at: rd32(u, q + 11), data: u.subarray(q + 15, q + n) });
     if (u[q] >= 0x90 && u[q] <= 0x95) dacStream = true;
     q += n;
   }
@@ -250,7 +302,9 @@ async function packVgm(u) {
       pend++;
     }
   };
-  if (v.opl3) a.push(Uint8Array.of(0x5A, 0x01, 0x20));   // OPL3 joué en OPL2 : les formes d'onde permises
+  if (v.opl3) a.push(Uint8Array.of(0x5A, 0x01, 0x20));
+  const nb = v.opnb ? opnbTrim(u, start, romBlocks) : null;
+  const shA = new Uint8Array(0x30), shB = new Uint8Array(0x16);   // OPL3 joué en OPL2 : les formes d'onde permises
   while (p < u.length) {
     const n = cmdLen(u, p), c = u[p];
     if (!n) break;
@@ -262,6 +316,30 @@ async function packVgm(u) {
     else if (st && (c === 0x61 || c === 0x62 || c === 0x63 || (c >= 0x70 && c <= 0x7F))) {
       wait(c === 0x61 ? u[p + 1] | u[p + 2] << 8 : c === 0x62 ? 735 : c === 0x63 ? 882 : (c & 15) + 1, out);
     } else if (st && c >= 0x80 && c <= 0x8F) { flush(out); out.push(Uint8Array.of(0x80)); wait(c & 15, out); }
+    else if (nb && c === 0x59 && u[p + 1] < 0x30 && (u[p + 1] >= 0x10 || u[p + 1] === 0)) {   // ADPCM-A : adresses réécrites
+      const r = u[p + 1], d = u[p + 2];
+      if (r) shA[r] = d;
+      else {
+        if (st) flush(out);
+        if (!(d & 0x80)) for (let ch = 0; ch < 6; ch++) if (d >> ch & 1) {
+          const s = nb.mapA(shA[0x18 + ch] << 8 | shA[0x10 + ch]), e = nb.mapA(Math.max(shA[0x18 + ch] << 8 | shA[0x10 + ch], shA[0x28 + ch] << 8 | shA[0x20 + ch]));
+          out.push(Uint8Array.of(0x59, 0x10 + ch, s & 255, 0x59, 0x18 + ch, s >> 8, 0x59, 0x20 + ch, e & 255, 0x59, 0x28 + ch, e >> 8));
+        }
+        out.push(u.subarray(p, p + n));
+      }
+    }
+    else if (nb && c === 0x58 && u[p + 1] >= 0x10 && u[p + 1] <= 0x15) {                   // ADPCM-B : de même
+      const r = u[p + 1], d = u[p + 2];
+      if (r === 0x10 || r === 0x11) {
+        if (st) flush(out);
+        if (r === 0x10 && (d & 0x80)) {
+          const s = nb.mapB(shB[0x13] << 8 | shB[0x12]), e = nb.mapB(Math.max(shB[0x13] << 8 | shB[0x12], shB[0x15] << 8 | shB[0x14]));
+          out.push(Uint8Array.of(0x58, 0x12, s & 255, 0x58, 0x13, s >> 8, 0x58, 0x14, e & 255, 0x58, 0x15, e >> 8));
+        }
+        out.push(u.subarray(p, p + n));
+      } else shB[r] = d;
+    }
+    else if (nb && (c === 0x58 || c === 0x59)) { if (st) flush(out); out.push(u.subarray(p, p + n)); }
     else if (v.opl3 && (c === 0x5E || c === 0x5F)) {   // OPL3 -> OPL2 : la première banque de 9 voies
       const [w, lost] = opl3to2(c, u[p + 1], u[p + 2]);
       if (lost) others = true;
@@ -274,10 +352,10 @@ async function packVgm(u) {
   if (st) flush(loop ? b : a);
   const cat = parts => { const t = new Uint8Array(parts.reduce((x, y) => x + y.length, 0)); let o = 0; for (const q of parts) { t.set(q, o); o += q.length; } return t; };
   const end = Uint8Array.of(0x66);
-  const P = v.ym ? cat(pcm) : nesMem || new Uint8Array(0), A = await deflateRaw(cat([...a, end])), B = loop ? await deflateRaw(cat([...b, end])) : new Uint8Array(0);
+  const P = v.ym ? cat(pcm) : nb ? cat([nb.a, nb.b]) : nesMem || new Uint8Array(0), A = await deflateRaw(cat([...a, end])), B = loop ? await deflateRaw(cat([...b, end])) : new Uint8Array(0);
   const beat = beatsOf(u, start);
-  const head = new Uint8Array(72), dv = new DataView(head.buffer);
-  head.set([0x52, 0x53, 0x4D, 0x35]);                 // "RSM5"
+  const head = new Uint8Array(88), dv = new DataView(head.buffer);
+  head.set([0x52, 0x53, 0x4D, 0x36]);                 // "RSM6"
   dv.setUint32(4, v.ym, true); dv.setUint32(8, v.sn, true);
   dv.setUint32(12, v.total, true); dv.setUint32(16, loop ? v.loop : 0, true);
   dv.setUint32(20, P.length, true); dv.setUint32(24, A.length, true); dv.setUint32(28, B.length, true);
@@ -286,8 +364,10 @@ async function packVgm(u) {
   dv.setUint32(40, v.gb, true); dv.setUint32(44, v.nes, true);
   dv.setUint32(48, Math.round(beat.bpm * 100), true); dv.setUint32(52, beat.phase, true);   // tempo (BPM x 100), 1er temps
   dv.setUint32(56, v.ay, true); dv.setUint32(60, v.ayType, true);                         // AY-3-8910 / YM2149
-  dv.setUint32(64, v.ym ? 0 : v.opl, true); dv.setUint32(68, v.ym ? 0 : v.oplType, true);  // OPL2 / OPL
+  dv.setUint32(64, v.ym || v.opnb ? 0 : v.opl, true); dv.setUint32(68, v.ym || v.opnb ? 0 : v.oplType, true);  // OPL2 / OPL
+  dv.setUint32(72, v.opnb, true); dv.setUint32(76, v.opnbType, true); dv.setUint32(80, nb ? nb.a.length : 0, true);   // YM2610
   const blob = cat([head, P, A, B]);
+  if (nb) Object.assign(v, { adpcm: nb.a.length + nb.b.length, adpcmRom: nb.romA + (nb.romB || 0) });
   return Object.assign(v, { blob, bpm: beat.bpm, phase: beat.phase, pcmLen: P.length, aLen: A.length, bLen: B.length, dacStream, raw: u.length });
 }
 

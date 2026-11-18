@@ -168,6 +168,9 @@
 
 #include "fmopn.h"
 
+/* ROMsounds : la place de la puce, commune au YM2612 et au YM2610 (jamais les deux à la fois : ~21 Ko de RAM) */
+static void *fm_one(void);
+
 
 /* include external DELTA-T unit (when needed) */
 #if (BUILD_YM2608||BUILD_YM2610||BUILD_YM2610B)
@@ -176,7 +179,7 @@
 
 /* shared function building option */
 #define BUILD_OPN (BUILD_YM2203||BUILD_YM2608||BUILD_YM2610||BUILD_YM2610B||BUILD_YM2612)
-#define BUILD_OPN_PRESCALER (BUILD_YM2203||BUILD_YM2608)
+#define BUILD_OPN_PRESCALER (BUILD_YM2203||BUILD_YM2608||BUILD_YM2610)	/* ROMsounds : + YM2610 (horloge / 144) */
 
 
 /* globals */
@@ -2805,7 +2808,7 @@ INLINE void ADPCMA_calc_chan( YM2610 *F2610, ADPCM_CH *ch )
 				data = ch->now_data & 0x0f;
 			else
 			{
-				ch->now_data = F2610->pcmbuf[ch->now_addr>>1];
+				ch->now_data = (ch->now_addr>>1) < F2610->pcm_size ? F2610->pcmbuf[ch->now_addr>>1] : 0x80;	/* ROMsounds : hors de la ROM : silence */
 				data = (ch->now_data >> 4) & 0x0f;
 			}
 
@@ -3964,10 +3967,8 @@ void *ym2610_init(void *param, UINT32 clock, UINT32 rate,
 {
 	YM2610 *F2610;
 
-	/* allocate extend state space */
-	F2610 = (YM2610 *)calloc(1,sizeof(YM2610));
-	if( F2610==NULL)
-		return NULL;
+	F2610 = (YM2610 *)fm_one();	/* ROMsounds : une seule puce, pas d'allocation (place commune avec le YM2612) */
+	memset(F2610, 0, sizeof(YM2610));
 
 	/* allocate total level table (128kb space) */
 	init_tables();
@@ -4022,10 +4023,7 @@ void ym2610_shutdown(void *chip)
 {
 	YM2610 *F2610 = (YM2610 *)chip;
 
-	free(F2610->pcmbuf);        F2610->pcmbuf = NULL;
-	free(F2610->deltaT.memory); F2610->deltaT.memory = NULL;
-
-	free(F2610);
+	F2610->pcmbuf = NULL;        F2610->deltaT.memory = NULL;	/* ROMsounds : instance statique, ROM du morceau */
 }
 
 /* reset one of chip */
@@ -4076,7 +4074,7 @@ void ym2610_reset_chip(void *chip)
 	/**** ADPCM work initial ****/
 	for( i = 0; i < 6 ; i++ )
 	{
-		F2610->adpcm[i].step      = (UINT32)((float)(1<<ADPCM_SHIFT)*((float)F2610->OPN.ST.freqbase)/3.0);
+		F2610->adpcm[i].step      = (UINT32)((1<<ADPCM_SHIFT)*F2610->OPN.ST.freqbase/3);	/* ROMsounds : en entiers */
 		F2610->adpcm[i].now_addr  = 0;
 		F2610->adpcm[i].now_step  = 0;
 		F2610->adpcm[i].start     = 0;
@@ -4258,59 +4256,16 @@ UINT8 ym2610_timer_over(void *chip,UINT8 c)
 	return F2610->OPN.ST.irq;
 }
 
-void ym2610_alloc_pcmroma(void* chip, UINT32 memsize)
+/* ROMsounds : les ROM ADPCM-A et ADPCM-B restent là où est le morceau (pas de copie) */
+void ym2610_set_roms(void* chip, const UINT8* rom_a, UINT32 len_a, const UINT8* rom_b, UINT32 len_b)
 {
 	YM2610 *F2610 = (YM2610 *)chip;
-	
-	if (F2610->pcm_size == memsize)
-		return;
-	F2610->pcmbuf = (UINT8*)realloc(F2610->pcmbuf, memsize);
-	F2610->pcm_size = memsize;
-	memset(F2610->pcmbuf, 0xFF, memsize);
-	
-	return;
-}
 
-void ym2610_write_pcmroma(void* chip, UINT32 offset, UINT32 length, const UINT8* data)
-{
-	YM2610 *F2610 = (YM2610 *)chip;
-	
-	if (offset > F2610->pcm_size)
-		return;
-	if (offset + length > F2610->pcm_size)
-		length = F2610->pcm_size - offset;
-	
-	memcpy(F2610->pcmbuf + offset, data, length);
-	
-	return;
-}
-
-void ym2610_alloc_pcmromb(void* chip, UINT32 memsize)
-{
-	YM2610 *F2610 = (YM2610 *)chip;
-	
-	if (F2610->deltaT.memory_size == memsize)
-		return;
-	F2610->deltaT.memory = (UINT8*)realloc(F2610->deltaT.memory, memsize);
-	F2610->deltaT.memory_size = memsize;
-	memset(F2610->deltaT.memory, 0xFF, memsize);
+	F2610->pcmbuf = (UINT8*)rom_a;
+	F2610->pcm_size = rom_a ? len_a : 0;
+	F2610->deltaT.memory = (UINT8*)rom_b;
+	F2610->deltaT.memory_size = rom_b ? len_b : 0;
 	YM_DELTAT_calc_mem_mask(&F2610->deltaT);
-	
-	return;
-}
-
-void ym2610_write_pcmromb(void* chip, UINT32 offset, UINT32 length, const UINT8* data)
-{
-	YM2610 *F2610 = (YM2610 *)chip;
-	
-	if (offset > F2610->deltaT.memory_size)
-		return;
-	if (offset + length > F2610->deltaT.memory_size)
-		length = F2610->deltaT.memory_size - offset;
-	
-	memcpy(F2610->deltaT.memory + offset, data, length);
-	
-	return;
 }
 
 void ym2610_set_mute_mask(void *chip, UINT32 MuteMask)
@@ -4574,8 +4529,7 @@ void * ym2612_init(void *param, UINT32 clock, UINT32 rate,
 	YM2612 *F2612;
 
 	/* allocate extend state space */
-	static YM2612 one;	/* ROMsounds : une seule puce, pas d'allocation */
-	F2612 = &one;
+	F2612 = (YM2612 *)fm_one();	/* ROMsounds : une seule puce, pas d'allocation (place commune avec le YM2610) */
 	memset(F2612, 0, sizeof(YM2612));
 
 	/* allocate total level table (128kb space) */
@@ -4813,3 +4767,15 @@ void ym2612_set_log_cb(void* chip, DEVCB_LOG func, void* param)
 	return;
 }
 #endif /* (BUILD_YM2612) */
+
+/* ROMsounds : la place commune (voir fm_one plus haut) */
+static void *fm_one(void)
+{
+	static union {
+#if (BUILD_YM2610||BUILD_YM2610B)
+		YM2610 b;
+#endif
+		YM2612 a;
+	} u;
+	return &u;
+}

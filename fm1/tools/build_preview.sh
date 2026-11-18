@@ -10,7 +10,8 @@ I="-Ifirmware/src -Ifirmware/ext/shim -Ifirmware/ext/fmopn -Ifirmware/ext/fmopl 
 mkdir -p build/preview
 clang $F $I -c preview/preview.c -o build/preview/preview.o
 clang $F $I -c firmware/ext/fmopn/fmopn.c -o build/preview/fmopn.o
+clang $F $I -c firmware/ext/fmopn/ymdeltat.c -o build/preview/ymdeltat.o
 clang $F $I -c firmware/ext/fmopl/fmopl.c -o build/preview/fmopl.o
 clang $F $I -c firmware/ext/uzlib/tinflate.c -o build/preview/tinflate.o
-wasm-ld --no-entry --strip-all --initial-memory=4194304 -o "$OUT" build/preview/preview.o build/preview/fmopn.o build/preview/fmopl.o build/preview/tinflate.o
+wasm-ld --no-entry --strip-all --initial-memory=4194304 -o "$OUT" build/preview/preview.o build/preview/fmopn.o build/preview/ymdeltat.o build/preview/fmopl.o build/preview/tinflate.o
 echo "preview -> $OUT ($(wc -c < "$OUT") octets)"

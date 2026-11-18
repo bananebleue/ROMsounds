@@ -2,12 +2,12 @@
 /* ROMsounds : le lecteur du FM-1, pour la page (WebAssembly). Mêmes puces, même lecture des commandes, mêmes niveaux
  * que firmware/src/romsounds.c (render_block, sans les effets) : ce qu'on écoute dans la page est ce que jouera le FM-1.
  *
- *   pv_buf()           l'endroit où la page copie le morceau préparé (RSM1 à RSM5, RSMD : web/romsounds.js)
+ *   pv_buf()           l'endroit où la page copie le morceau préparé (RSM1 à RSM6, RSMD : web/romsounds.js)
  *   pv_load(taille)    0, ou un code d'erreur (comme song_load)
  *   pv_render(n)       calcule n trames (n <= PV_BLOCK) dans pv_out() (int16 stéréo, 44,1 kHz) ; rend le nombre de
  *                      trames calculées (moins que n : fin du morceau)
  *   pv_played()        trames jouées (le temps du morceau, la boucle continue après la fin)
- *   pv_mute(masque)    voix coupées (même ordre que sur le FM-1 : FM 1-6, DAC, PSG 1-3, bruit ; Game Boy ; NES ; OPL ; AY)
+ *   pv_mute(masque)    voix coupées (même ordre que sur le FM-1 : FM 1-6, DAC, PSG 1-3, bruit ; Game Boy ; NES ; YM2610 : FM, ADPCM-A, ADPCM-B ; OPL ; AY / SSG)
  *
  *   tools/build_preview.sh  ->  web/preview.wasm  (clang --target=wasm32, sans bibliothèque C) */
 #include <stdint.h>
@@ -60,6 +60,7 @@ static uint32_t mute;
 
 static void vgm_ym(uint32_t port, uint32_t reg, uint32_t val)
 {
+    if (!ym) return;
     ym2612_write(ym, (UINT8)(port * 2u), (UINT8)reg);
     ym2612_write(ym, (UINT8)(port * 2u + 1u), (UINT8)val);
 }
@@ -68,7 +69,14 @@ static void vgm_psg_stereo(uint32_t val) { psg_stereo(&psg, val); }
 static void vgm_gb(uint32_t reg, uint32_t val) { gb_write(&gb, reg, val); }
 static void vgm_nes(uint32_t reg, uint32_t val) { nes_write(&nes, reg, val); }
 static void vgm_ay(uint32_t reg, uint32_t val) { ay_write(&ay, reg, val); }
-static void *opl;
+static void *opl, *opnb;
+static void vgm_opnb(uint32_t port, uint32_t reg, uint32_t val)
+{
+    if (!opnb) return;
+    if (!port && reg < 0x10u) { ay_write(&ay, reg, val); return; }
+    ym2610_write(opnb, (UINT8)(port * 2u), (UINT8)reg);
+    ym2610_write(opnb, (UINT8)(port * 2u + 1u), (UINT8)val);
+}
 static void vgm_opl(uint32_t reg, uint32_t val)
 {
     if (!opl) return;
@@ -122,6 +130,11 @@ static void apply_mute(void)
 {
     uint32_t n = 0;
     if (song.ym_clock) { ym2612_set_mute_mask(ym, mute & 0x7Fu); n = 7u; }
+    else if (song.opnb_clock) {                 /* comme fx_apply_mute (firmware/src/romsounds.c) */
+        uint32_t nf = song.opnb_type & 1u ? 6u : 4u, fm = nf == 6u ? mute & 0x3Fu : (mute & 3u) << 1 | (mute >> 2 & 3u) << 4;
+        if (opnb) ym2610_set_mute_mask(opnb, fm | (mute >> nf & 0x7Fu) << 6);
+        n = nf + 7u;
+    }
     psg.mute = (uint8_t)(song.psg_clock ? mute >> n & 15u : 0u); if (song.psg_clock) n += 4u;
     gb.mute = (uint8_t)(song.gb_clock ? mute >> n & 15u : 0u); if (song.gb_clock) n += 4u;
     nes.mute = (uint8_t)(song.nes_clock ? mute >> n & 31u : 0u); if (song.nes_clock) n += 5u;
@@ -148,8 +161,8 @@ EXPORT("pv_load") int pv_load(uint32_t size)
         apply_mute();
         return 0;
     }
-    if (size < 40u || size > VGM_MAX || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] < '1' || m[3] > '5')) return 4;
-    hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : m[3] == '3' ? 56u : m[3] == '4' ? 64u : 72u;
+    if (size < 40u || size > VGM_MAX || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] < '1' || m[3] > '6')) return 4;
+    hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : m[3] == '3' ? 56u : m[3] == '4' ? 64u : m[3] == '5' ? 72u : 88u;
     if (size < hl) return 4;
     pcm = rd32(m + 20); a = rd32(m + 24); b = rd32(m + 28);
     if (hl + pcm + a + b != size || !a) return 4;
@@ -162,15 +175,30 @@ EXPORT("pv_load") int pv_load(uint32_t size)
     song.ay_type = hl > 56u ? rd32(m + 60) : 0u;
     song.opl_clock = hl > 64u ? rd32(m + 64) : 0u;
     song.opl_type = hl > 64u ? rd32(m + 68) : 0u;
+    song.opnb_clock = hl > 72u ? rd32(m + 72) : 0u;
+    song.opnb_type = hl > 72u ? rd32(m + 76) : 0u;
+    song.adpcm_a_len = hl > 72u ? rd32(m + 80) : 0u;
+    if (song.adpcm_a_len > pcm) return 4;
+    if (song.opnb_clock && !song.ay_clock) { song.ay_clock = song.opnb_clock / 4u; song.ay_type = 0x10u; }
     song.pcm = m + hl; song.pcm_len = pcm;
     part_a = m + hl + pcm; len_a = a;
     part_b = part_a + a; len_b = b;
-    if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock && !song.ay_clock && !song.opl_clock) return 3;
+    if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock && !song.ay_clock && !song.opl_clock && !song.opnb_clock) return 3;
     yc = song.ym_clock ? song.ym_clock : 7670453u;
     if (yc > 9000000u) yc = 9000000u;
     rate = yc / 144u;
-    ym = ym2612_init(NULL, yc, rate, NULL, NULL);
-    ym2612_reset_chip(ym);
+    ym = 0; opnb = 0;
+    if (song.opnb_clock) {                      /* comme song_start (firmware/src/romsounds.c) */
+        uint32_t oc = song.opnb_clock > 9000000u ? 9000000u : song.opnb_clock;
+        rate = oc / 144u;
+        opnb = ym2610_init(NULL, oc, rate, NULL, NULL);
+        ym2610_reset_chip(opnb);
+        ym2610_set_roms(opnb, song.adpcm_a_len ? song.pcm : 0, song.adpcm_a_len,
+                        song.pcm_len > song.adpcm_a_len ? song.pcm + song.adpcm_a_len : 0, song.pcm_len - song.adpcm_a_len);
+    } else {
+        ym = ym2612_init(NULL, yc, rate, NULL, NULL);
+        ym2612_reset_chip(ym);
+    }
     opl = 0;
     if (song.opl_clock && !song.ym_clock) {     /* comme song_start (firmware/src/romsounds.c) */
         uint32_t oc = song.opl_clock > 4000000u ? 4000000u : song.opl_clock;
@@ -206,11 +234,12 @@ EXPORT("pv_render") uint32_t pv_render(uint32_t frames)
         n = wait < left ? wait : left;
         if (n > 256u) n = 256u;                 /* (mbuf : 256 trames au plus d'un coup, comme sur le FM-1) */
         for (j = 0; j < n; j++) { p += ym_step; k += p >> 16; p &= 0xFFFFu; }
-        if (song.ym_clock || opl) {
-            int32_t g = song.ym_clock ? 2 : OPL_GAIN;
+        if (song.ym_clock || opl || opnb) {
+            int32_t g = song.ym_clock ? 2 : opnb ? OPNB_GAIN : OPL_GAIN;
             mbuf_l[0] = mbuf_l[mbuf_n]; mbuf_r[0] = mbuf_r[mbuf_n];
             if (k) {
                 if (song.ym_clock) ym2612_update_one(ym, k, bb);
+                else if (opnb) { if (song.opnb_type & 1u) ym2610b_update_one(opnb, k, bb); else ym2610_update_one(opnb, k, bb); }
                 else if (song.opl_type == 2u) ym3526_update_one(opl, k, bb);
                 else ym3812_update_one(opl, k, bb);
             }
