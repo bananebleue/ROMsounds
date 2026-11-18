@@ -45,6 +45,9 @@ jobs:
 
       - name: Lecteur VGM (sur PC) - envoi par la page relu par le firmware, lecture d'un fichier de test
         run: |
+          # le lecteur de prévisualisation de la page (WebAssembly) : clang + wasm-ld
+          command -v wasm-ld > /dev/null || sudo apt-get install -y -q lld
+          sh tools/build_preview.sh
           cc -O2 -Wall -o build/make_test_vgm tests/make_test_vgm.c
           build/make_test_vgm build/test.vgm
           node ../tests/rx_test.js build/test.vgm build/test.syx build/test.rsm
@@ -93,6 +96,13 @@ jobs:
           # la place annoncée à la page après D : 3 morceaux, 25 + 26 + 20 secteurs de 4 Ko sur 73
           grep -q "BF 119 3" build/tasse.log && grep -q "BF 120 71" build/tasse.log && grep -q "BF 121 73" build/tasse.log
           node ../tests/wav_check.js build/host/romsounds.wav 16.6-18.2:5000
+          # l'écoute dans la page (preview.wasm) : le même son que le lecteur du FM-1 (à 1 % près par seconde)
+          build/make_test_vgm build/gb.vgm gb > /dev/null && node ../tests/rx_test.js build/gb.vgm build/x.syx build/gb.rsm > /dev/null
+          node ../tests/preview_test.js build/gb.rsm 6 build/pv_gb.wav
+          printf '6100 end\n' > build/f6.txt && ROMSOUNDS_RSM=build/gb.rsm sh tests/run_host.sh build/f6.txt > /dev/null
+          node ../tests/wav_compare.js build/pv_gb.wav build/host/romsounds.wav 1 6 1
+          node ../tests/preview_test.js build/test.rsm 6 build/pv_test.wav
+          node ../tests/wav_check.js build/pv_test.wav 0.2-1.8:5000 2.2-2.9:2000 4.1-4.9:2000
           # la bibliothèque vue par la page : liste (SysEx 05), place pour D, retrait de B (06)
           node ../tests/lib_test.js
           # effets : tempo 200 % (fréquences de build/gb.rsm deux fois plus tôt), voix coupées, solo (SEL + touche),

@@ -54,6 +54,9 @@
   button.ghost, select, input[type=number] { background:var(--win2); color:var(--ink); box-shadow:inset 0 0 0 2px var(--frame), 3px 3px 0 var(--shade); }
   button:disabled { opacity:.45; cursor:not-allowed; }
   input[type=file] { color:var(--dim); max-width:100%; font:inherit; }
+  input[type=range] { appearance:none; height:14px; background:var(--shade); box-shadow:inset 0 0 0 2px var(--frame); cursor:pointer; }
+  input[type=range]::-webkit-slider-thumb { appearance:none; width:12px; height:22px; background:var(--gold); box-shadow:2px 2px 0 var(--shade); }
+  input[type=range]::-moz-range-thumb { width:12px; height:22px; border:0; border-radius:0; background:var(--gold); }
   input[type=file]::file-selector-button { font:600 1rem var(--px); background:var(--win2); color:var(--ink); border:0; padding:8px 12px;
            box-shadow:inset 0 0 0 2px var(--frame); margin-right:10px; cursor:pointer; }
   pre { white-space:pre-wrap; background:var(--shade); padding:12px; margin:12px 0 0; min-height:3em; font:15px/1.45 var(--px); color:var(--ink);
@@ -151,6 +154,11 @@
     </div>
     <div class="row" id="vgmPickRow" hidden style="margin-top:10px">
       <select id="vgmPick" class="grow" aria-label="Morceau du pack"></select>
+    </div>
+    <div class="row" id="pvRow" hidden style="margin-top:12px">
+      <button class="ghost" id="pvPlay" aria-label="Écouter le morceau dans la page">▶ Écouter</button>
+      <input type="range" id="pvSeek" min="0" max="1000" value="0" style="flex:1 1 120px; min-width:0" aria-label="Position dans le morceau">
+      <span id="pvTime" class="sub" style="margin:0; white-space:nowrap">0:00 / 0:00</span>
     </div>
     <div class="row" id="vgmBpmRow" hidden style="margin-top:10px">
       <label for="vgmBpm">Tempo pour le beat roll</label>
@@ -515,8 +523,10 @@ async function showVgm(u, name) {
     lines.push('Pour le FM-1 : ' + kb(v.blob.length) + ' (fichier ouvert : ' + kb(v.raw) + ' ; échantillons ' + kb(v.pcmLen) + ', musique compressée ' + kb(v.aLen + v.bLen) + ')');
     if (v.dacStream) lines.push('Flux DAC (VGM 1.60) : convertis par la page pour le FM-1.');
     if (v.blob.length > VGM_MAX) throw new Error('trop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus)');
+    pvStop(); pvF0 = 0;
     vgm = v;
     $('vgmLog').textContent = lines.filter(Boolean).join('\n');
+    $('pvRow').hidden = false; pvShow(0);
     $('vgmBpmRow').hidden = false;
     $('vgmBpm').value = v.bpm || 120;
     $('vgmBpmNote').textContent = v.bpm ? 'deviné d’après les notes ; corrige-le si le beat roll tombe à côté' : 'pas deviné : 120 par défaut';
@@ -528,6 +538,7 @@ async function showVgm(u, name) {
 $('vgmFile').addEventListener('change', async () => {
   const f = $('vgmFile').files && $('vgmFile').files[0];
   vgm = null; pack = []; $('vgmBar').hidden = true; $('vgmPickRow').hidden = true; $('vgmBpmRow').hidden = true;
+  pvStop(); $('pvRow').hidden = true;
   if (!f) { $('vgmLog').textContent = 'Aucun fichier.'; ready(); return; }
   const u = new Uint8Array(await f.arrayBuffer());
   if (u[0] === 0x50 && u[1] === 0x4B) {         // .zip : un pack
@@ -665,6 +676,80 @@ file.addEventListener('change', async () => {
 $('fileInstall').addEventListener('click', () => { if (filePkg) install(async () => filePkg); });
 okBox.addEventListener('change', ready);
 $('detect').addEventListener('click', detect);
+
+/* ---------- écouter dans la page : le lecteur du FM-1 en WebAssembly (fm1/preview/preview.c -> preview.wasm) ---------- */
+let pvx = null, pvCtx = null, pvGain = null, pvSrc = [], pvTimer = 0, pvNext = 0, pvT0 = 0, pvF0 = 0, pvOn = false, pvBlob = null, pvEnd = false;
+const fmt = f => mmss(f / 44100);
+async function pvWasm() {
+  if (pvx) return pvx;
+  const r = await fetch('preview.wasm');
+  if (!r.ok) throw new Error('lecteur indisponible (' + r.status + ')');
+  const { instance } = await WebAssembly.instantiate(await r.arrayBuffer(), {});
+  return (pvx = instance.exports);
+}
+function pvLoad() {                              // le morceau choisi, depuis le début
+  const x = pvx;
+  new Uint8Array(x.memory.buffer).set(vgm.blob, x.pv_buf());
+  const e = x.pv_load(vgm.blob.length);
+  if (e) throw new Error('morceau illisible (' + e + ')');
+  pvBlob = vgm.blob; pvEnd = false;
+}
+function pvShown() {                              // la position entendue (le calcul a de l'avance)
+  if (!pvOn || !pvCtx) return pvF0;
+  return pvF0 + Math.max(0, (pvCtx.currentTime - pvT0) * 44100);
+}
+function pvShow(f) {
+  const tot = vgm ? vgm.total : 0, loop = vgm ? vgm.loop : 0;
+  let t = f;
+  if (tot && t > tot && loop && loop <= tot) t = tot - loop + (t - tot) % loop;   // (comme l'écran du FM-1)
+  $('pvTime').textContent = fmt(t) + ' / ' + fmt(tot);
+  if (document.activeElement !== $('pvSeek')) $('pvSeek').value = tot ? Math.min(1000, Math.round(t / tot * 1000)) : 0;
+}
+function pvPump() {
+  const x = pvx;
+  while (!pvEnd && pvNext < pvCtx.currentTime + 0.8) {
+    const n = x.pv_render(4096);
+    if (!n) { pvEnd = true; break; }
+    const s = new Int16Array(x.memory.buffer, x.pv_out(), n * 2), b = pvCtx.createBuffer(2, n, 44100);
+    const L = b.getChannelData(0), R = b.getChannelData(1);
+    for (let i = 0; i < n; i++) { L[i] = s[2 * i] / 32768; R[i] = s[2 * i + 1] / 32768; }
+    const src = pvCtx.createBufferSource();
+    src.buffer = b; src.connect(pvGain); src.start(pvNext);
+    src.onended = () => { pvSrc = pvSrc.filter(q => q !== src); };
+    pvSrc.push(src);
+    pvNext += n / 44100;
+  }
+  pvShow(pvShown());
+  if (pvEnd && pvCtx.currentTime > pvNext) pvStop(true);
+}
+async function pvStart(atFrame) {
+  try {
+    await pvWasm();
+    if (!pvCtx) { pvCtx = new (window.AudioContext || window.webkitAudioContext)(); pvGain = pvCtx.createGain(); pvGain.gain.value = 0.9; pvGain.connect(pvCtx.destination); }
+    await pvCtx.resume();
+    pvLoad();
+    while (atFrame && pvx.pv_played() + 4096 <= atFrame && pvx.pv_render(4096)) { /* avancer sans jouer */ }
+    pvF0 = pvx.pv_played(); pvT0 = pvNext = pvCtx.currentTime + 0.08; pvOn = true;
+    $('pvPlay').textContent = '■ Arrêter';
+    pvPump();
+    pvTimer = setInterval(pvPump, 100);
+  } catch (e) { pvStop(); $('vgmLog').textContent = 'Écoute impossible : ' + (e.message || e); }
+}
+function pvStop(atEnd) {
+  const at = pvShown();
+  clearInterval(pvTimer); pvTimer = 0;
+  for (const s of pvSrc) { try { s.stop(); } catch (e) { /* déjà fini */ } }
+  pvSrc = [];
+  pvOn = false; pvF0 = atEnd ? 0 : at;
+  $('pvPlay').textContent = '▶ Écouter';
+  if (atEnd) pvShow(0);
+}
+$('pvPlay').addEventListener('click', () => { if (pvOn) pvStop(); else if (vgm) pvStart(pvF0); });
+$('pvSeek').addEventListener('change', () => {
+  if (!vgm) return;
+  const f = Math.round($('pvSeek').value / 1000 * vgm.total);
+  if (pvOn) { pvStop(); pvStart(f); } else { pvF0 = f; pvShow(f); }
+});
 
 /* ---------- le FM-1 dessiné : attribuer molettes et boutons (firmware : SysEx 07 / 08, romsounds.c) ---------- */
 const ENC_FN = ['Aucune', 'Tempo', 'Hauteur', 'Filtre (passe-bas, passe-haut)', 'Écho (répétitions)', 'Temps de l’écho et de la boucle', 'Grain', 'Phaser, flanger'];
