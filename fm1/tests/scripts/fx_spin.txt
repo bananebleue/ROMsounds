@@ -1,0 +1,4 @@
+# ROMsounds, effets : backspin (ENV = bouton 4) à 2,5 s sur l onde de build/gb.rsm (262 Hz) : à l envers de plus en plus vite, puis l onde revient
+2500 btn 4
+2700 shot
+3200 end

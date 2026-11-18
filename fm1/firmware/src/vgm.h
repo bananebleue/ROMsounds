@@ -23,6 +23,7 @@ typedef struct {
     uint32_t warn;
     uint32_t psg_cfg;                   /* bruit du SN76489 : rebouclage | largeur << 16 (0 : Sega) */
     uint32_t gb_clock, nes_clock;
+    uint32_t bpm100, beat0;             /* tempo deviné par la page (BPM x 100, 0 : inconnu), premier temps (trames) */
 } vgm_t;
 
 static int vgm_get(void);

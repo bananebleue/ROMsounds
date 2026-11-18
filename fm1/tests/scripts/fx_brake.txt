@@ -1,0 +1,5 @@
+# ROMsounds, effets : vinyl brake (LFO = bouton 5) à 0,3 s ; arrêt ; PLAY (12) à 2,5 s relance, sur build/gb.rsm
+300 btn 5
+2000 shot
+2500 btn 12
+3000 end

@@ -1,8 +1,8 @@
 # ROMsounds, bibliothèque : ROMSOUNDS_RSM=build/test.rsm,build/stream.rsm,build/gg.rsm ROMSOUNDS_EVERY=3000
-# trois morceaux reçus (0, 3, 6 s), gardés ; OCT- (bouton 0) : le précédent ; REC (13) maintenu : retiré
+# trois morceaux reçus (0, 3, 6 s), gardés ; SELECT (encodeur 0, un cran à gauche) : le précédent ; REC (13) maintenu : retiré
 2500 shot
 8500 shot
-9000 btn 0
+9000 enc 0 -1
 12000 shot
 13000 btndown 13
 15500 btnup 13

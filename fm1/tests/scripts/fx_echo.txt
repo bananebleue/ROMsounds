@@ -1,5 +1,5 @@
-# ROMsounds, effets : écho 8 (KNOB4 = encodeur 5), boucle (FX = bouton 2) tenue de 3,3 à 3,95 s, HOME (8) à 4 s
-0 enc 5 8
+# ROMsounds, effets : écho 8 répétitions (PRESETS = encodeur 6), boucle (FX = bouton 2) tenue de 3,3 à 3,95 s, HOME (8) à 4 s
+0 enc 6 8
 3300 btndown 2
 3500 shot
 3950 btnup 2

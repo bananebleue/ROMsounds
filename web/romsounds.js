@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * ROMsounds : lire un fichier VGM (en-tête, étiquettes GD3), le préparer pour le FM-1 et le découper en SysEx.
- * Ce que reçoit le FM-1 (« RSM2 », firmware/src/romsounds.c) :
- *   en-tête de 48 octets : "RSM2", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
- *   parties, avertissements, bruit du SN76489 (rebouclage | largeur << 16), horloges Game Boy et NES ; puis la banque
+ * Ce que reçoit le FM-1 (« RSM3 », firmware/src/romsounds.c) :
+ *   en-tête de 56 octets : "RSM3", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
+ *   parties, avertissements, bruit du SN76489 (rebouclage | largeur << 16), horloges Game Boy et NES, tempo (BPM x 100, deviné :
+ *   beatsOf) et position du premier temps (trames) ; puis la banque
  *   d'échantillons (brute : pour le YM2612, toutes les données de type 0 bout à bout ; pour la NES, l'image de sa mémoire
  *   $8000-$FFFF, que lit le DMC), puis les commandes
  *   avant la boucle (A) et à partir de la boucle (B), chacune compressée (deflate brut). Le FM-1 garde le tout compressé
@@ -14,7 +15,8 @@ const VGM_MAX = 268 * 1024;              // place du morceau dans le FM-1 (firmw
 const VGM_ERR = { 0x41: 'fichier trop gros pour le FM-1', 0x42: 'données hors du fichier', 0x43: 'données incomplètes',
   0x44: 'fichier incomplet', 0x45: 'contrôle CRC faux', 0x49: 'ce n’est pas un fichier VGM', 0x4A: 'fichier VGM trop court',
   0x4B: 'ni YM2612 ni SN76489 dans ce fichier', 0x4C: 'préparation du morceau illisible',
-  0x46: 'morceau introuvable dans le FM-1 (la liste a changé : recommence)' };
+  0x46: 'morceau introuvable dans le FM-1 (la liste a changé : recommence)',
+  0x47: 'attribution refusée par le FM-1', 0x48: 'le FM-1 n’a pas pu l’enregistrer (mémoire flash)' };
 const LIB_MAX = 40;                      // morceaux au plus dans la bibliothèque du FM-1 (firmware : LIB_MAX)
 // horloges des autres puces dans l'en-tête (spécification VGM 1.71)
 const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x58, 0x5C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x74, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
@@ -70,6 +72,53 @@ function cmdLen(u, p) {
   return 1;
 }
 const KEEP = c => c === 0xB3 || c === 0xB4 || c === 0x4F || c === 0x50 || c === 0x52 || c === 0x53 || c === 0x61 || c === 0x62 || c === 0x63 || (c >= 0x70 && c <= 0x8F) || c === 0xE0;
+
+/** Le tempo du morceau, deviné d'après les débuts de notes (YM2612 : key-on ; DAC : départs d'échantillons ; PSG : attaques
+ * de volume ; Game Boy, NES : déclenchements) sur les 90 premières secondes : { bpm, phase (trames à 44,1 kHz du premier
+ * temps) }, bpm = 0 si le morceau n'a pas assez de notes. Autocorrélation des débuts par tranches de 10 ms, avec une
+ * préférence douce autour de 120 BPM ; la phase : le décalage qui tombe sur le plus de débuts. */
+function beatsOf(u, start) {
+  const BIN = 441, MAX = 9000;                   // 10 ms, 90 s
+  const e = new Float32Array(MAX + 1);
+  const vol = [15, 15, 15, 15];
+  let t = 0, n = 0, latch = 0;
+  const hit = w => { const i = Math.floor(t / BIN); if (i < MAX) { e[i] += w; n++; } };
+  for (let p = start; p < u.length && t < MAX * BIN;) {
+    const c = u[p], k = cmdLen(u, p);
+    if (!k) break;
+    if (c === 0x61) t += u[p + 1] | u[p + 2] << 8;
+    else if (c === 0x62) t += 735;
+    else if (c === 0x63) t += 882;
+    else if (c >= 0x70 && c <= 0x7F) t += (c & 15) + 1;
+    else if (c >= 0x80 && c <= 0x8F) t += c & 15;
+    else if (c === 0x52 && u[p + 1] === 0x28 && (u[p + 2] & 0xF0)) hit(1);
+    else if (c === 0xE0 || c === 0x95) hit(1.5);
+    else if (c === 0x50) {
+      const d = u[p + 1];
+      if (d & 0x80) latch = d >> 4 & 7;
+      if ((latch & 1) && (d & 0x80)) { const ch = latch >> 1, v = d & 15; if (v + 4 <= vol[ch]) hit(ch === 3 ? 1.5 : 1); vol[ch] = v; }
+    } else if (c === 0xB3 && (u[p + 1] === 0x04 || u[p + 1] === 0x09 || u[p + 1] === 0x0E || u[p + 1] === 0x13) && (u[p + 2] & 0x80)) hit(u[p + 1] === 0x13 ? 1.5 : 1);
+    else if (c === 0xB4 && (u[p + 1] === 0x03 || u[p + 1] === 0x07 || u[p + 1] === 0x0B || u[p + 1] === 0x0F)) hit(u[p + 1] === 0x0F ? 1.5 : 1);
+    else if (c === 0xB4 && u[p + 1] === 0x15 && (u[p + 2] & 0x10)) hit(1.5);   // DPCM
+    p += k;
+  }
+  const len = Math.min(MAX, Math.floor(t / BIN));
+  if (n < 16 || len < 400) return { bpm: 0, phase: 0 };
+  const s = new Float32Array(len);                // un peu lissé : ±10 ms
+  for (let i = 0; i < len; i++) s[i] = e[i] + 0.5 * ((i ? e[i - 1] : 0) + (i + 1 < len ? e[i + 1] : 0));
+  const at = x => { const i = Math.floor(x), f = x - i; return i + 1 < len ? s[i] * (1 - f) + s[i + 1] * f : 0; };
+  const ac = lag => { let a = 0; for (let i = 0; i + lag < len - 1; i++) a += s[i] * at(i + lag); return a / (len - lag); };
+  let best = 0, bpm = 0;
+  for (let b = 70; b <= 180; b += 0.5) {
+    const lag = 6000 / b, prior = Math.exp(-0.5 * (Math.log2(b / 120) / 0.8) ** 2);
+    const v = (ac(lag) + 0.5 * ac(2 * lag) + 0.25 * ac(4 * lag)) * prior;
+    if (v > best) { best = v; bpm = b; }
+  }
+  const P = 6000 / bpm;
+  let bp = 0, phase = 0;
+  for (let ph = 0; ph < P; ph += 0.5) { let a = 0; for (let x = ph; x < len; x += P) a += at(x); if (a > bp) { bp = a; phase = ph; } }
+  return { bpm, phase: Math.round(phase * BIN) };
+}
 
 async function deflateRaw(u) {
   const s = new Blob([u]).stream().pipeThrough(new CompressionStream('deflate-raw'));
@@ -192,16 +241,18 @@ async function packVgm(u) {
   const cat = parts => { const t = new Uint8Array(parts.reduce((x, y) => x + y.length, 0)); let o = 0; for (const q of parts) { t.set(q, o); o += q.length; } return t; };
   const end = Uint8Array.of(0x66);
   const P = v.ym ? cat(pcm) : nesMem || new Uint8Array(0), A = await deflateRaw(cat([...a, end])), B = loop ? await deflateRaw(cat([...b, end])) : new Uint8Array(0);
-  const head = new Uint8Array(48), dv = new DataView(head.buffer);
-  head.set([0x52, 0x53, 0x4D, 0x32]);                 // "RSM2"
+  const beat = beatsOf(u, start);
+  const head = new Uint8Array(56), dv = new DataView(head.buffer);
+  head.set([0x52, 0x53, 0x4D, 0x33]);                 // "RSM3"
   dv.setUint32(4, v.ym, true); dv.setUint32(8, v.sn, true);
   dv.setUint32(12, v.total, true); dv.setUint32(16, loop ? v.loop : 0, true);
   dv.setUint32(20, P.length, true); dv.setUint32(24, A.length, true); dv.setUint32(28, B.length, true);
   dv.setUint32(32, v.others || others ? 1 : 0, true);   // (les flux DAC sont convertis : plus d'avertissement)
   dv.setUint32(36, ver >= 0x110 ? (u[0x28] | u[0x29] << 8 | u[0x2A] << 16) >>> 0 : 0, true);   // bruit du SN76489
   dv.setUint32(40, v.gb, true); dv.setUint32(44, v.nes, true);
+  dv.setUint32(48, Math.round(beat.bpm * 100), true); dv.setUint32(52, beat.phase, true);   // tempo (BPM x 100), 1er temps
   const blob = cat([head, P, A, B]);
-  return Object.assign(v, { blob, pcmLen: P.length, aLen: A.length, bLen: B.length, dacStream, raw: u.length });
+  return Object.assign(v, { blob, bpm: beat.bpm, phase: beat.phase, pcmLen: P.length, aLen: A.length, bLen: B.length, dacStream, raw: u.length });
 }
 
 /** La bibliothèque du FM-1, d'après ses SysEx 0x15 (un par morceau) et 0x16 (la place, en secteurs de 4 Ko) :
@@ -265,6 +316,9 @@ async function gunzipIf(u) {
   return new Uint8Array(await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
 }
 
+/** Changer le tempo d'un morceau déjà préparé (blob RSM3) : BPM (0 : inconnu) */
+function setBpm(blob, bpm) { new DataView(blob.buffer, blob.byteOffset).setUint32(48, Math.round(bpm * 100), true); }
+
 /** Les SysEx à envoyer : { begin, data: [...], end } (pack7 : celui de fm1ota.js) */
 function vgmFrames(body, title, game, pack7, sys) {
   const a7 = t => [...(t || '')].map(c => c.charCodeAt(0) & 127);
@@ -276,6 +330,6 @@ function vgmFrames(body, title, game, pack7, sys) {
            end: [0xF0, 0x7D, 0x52, 0x53, 0x03, ...b35(crc32(body)), 0xF7] };
 }
 
-const API = { VGM_MAX, VGM_ERR, LIB_MAX, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf, libFromFrames, libPlan, b35 };
+const API = { beatsOf, setBpm, VGM_MAX, VGM_ERR, LIB_MAX, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf, libFromFrames, libPlan, b35 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API; else root.RSVGM = API;
 })(typeof self !== 'undefined' ? self : this);

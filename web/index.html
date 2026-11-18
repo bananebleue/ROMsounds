@@ -3,128 +3,225 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ROMsounds · firmwares du FM-1</title>
-<meta name="theme-color" content="#14161a">
+<title>ROMsounds · le lecteur de musiques de jeux du FM-1</title>
+<meta name="theme-color" content="#0f1340">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#14161a; --panel:#1e2127; --line:#2e323a; --text:#e9e6df; --dim:#9aa0aa; --acc:#ffa500; --ok:#6fcf8f; --bad:#ff6b57; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  main { max-width:720px; margin:0 auto; padding:20px 16px 48px; }
-  h1 { font-size:1.6rem; margin:0 0 2px; letter-spacing:.02em; }
-  h1 span { color:var(--acc); }
-  h2 { font-size:1.05rem; margin:0 0 10px; color:var(--acc); font-weight:600; }
-  .sub { color:var(--dim); margin:0 0 20px; }
-  section { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin:0 0 14px; }
+  /* « Sound test » : l'écran caché des jeux 16 bits où l'on écoutait les musiques. Fenêtres bleues à double cadre,
+   * curseur jaune, une seule fantaisie : le FM-1 dessiné, qui sert aussi à attribuer les commandes. */
+  :root {
+    --night:#0f1340; --win:#1a2166; --win2:#222b80; --frame:#8ea3ff; --shade:#05072a;
+    --ink:#f4f1e8; --dim:#a9b3e3; --gold:#ffd447; --hot:#ff5d73; --mint:#5ef2c2;
+    --plastic:#d9d5cc; --plastic2:#bdb8ad; --slot:#2b2d33;
+    --px:'Pixelify Sans', ui-monospace, monospace;
+  }
+  * { box-sizing:border-box; }
+  html { background:var(--night); }
+  body { margin:0; color:var(--ink); font:17px/1.5 var(--px);
+         background:
+           linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px) 0 0 / 100% 3px,
+           radial-gradient(1200px 600px at 70% -10%, #23308f 0%, transparent 60%), var(--night); min-height:100vh; }
+  a { color:var(--gold); }
+  :focus-visible { outline:3px solid var(--gold); outline-offset:2px; }
+  [hidden] { display:none !important; }
+
+  header.top { display:flex; align-items:center; gap:18px; flex-wrap:wrap; padding:18px clamp(14px, 3vw, 40px) 8px; }
+  .logo { font:700 clamp(30px, 4.4vw, 54px)/1 'Silkscreen', var(--px); margin:0; letter-spacing:.02em; color:var(--ink);
+          text-shadow:3px 3px 0 var(--shade), 6px 6px 0 #3a2a9a; }
+  .tagline { color:var(--dim); margin:0; flex:1 1 260px; }
+  .status { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .state { display:inline-flex; align-items:center; gap:8px; }
+  .dot { width:12px; height:12px; background:var(--dim); box-shadow:0 0 0 2px var(--shade); }
+  .dot.on { background:var(--mint); } .dot.busy { background:var(--gold); }
+
+  main { display:grid; gap:22px; padding:12px clamp(14px, 3vw, 40px) 48px;
+         grid-template-columns:minmax(0, 1.45fr) minmax(320px, 1fr); grid-template-areas:"deck player" "help player" "install install"; }
+  @media (max-width:980px) { main { grid-template-columns:1fr; grid-template-areas:"player" "deck" "help" "install"; } }
+  .deck { grid-area:deck; container-type:inline-size; } .player { grid-area:player; } .help { grid-area:help; } .install { grid-area:install; }
+
+  /* fenêtres de menu */
+  .win { background:linear-gradient(var(--win2), var(--win)); padding:18px 18px 16px; position:relative;
+         box-shadow:inset 0 0 0 3px var(--frame), inset 0 0 0 6px var(--shade), 6px 6px 0 var(--shade); }
+  .win h2 { font:600 1.15rem/1.2 var(--px); margin:0 0 10px; color:var(--gold); }
+  .sub { color:var(--dim); margin:0 0 12px; }
   .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .grow { flex:1 1 220px; min-width:0; }
-  button { font:inherit; border:0; border-radius:8px; padding:10px 14px; background:var(--acc); color:#1a1205; font-weight:600; cursor:pointer; }
-  button.ghost { background:transparent; color:var(--text); border:1px solid var(--line); font-weight:500; }
-  button:disabled { opacity:.4; cursor:not-allowed; }
-  .state { display:inline-flex; align-items:center; gap:8px; font-weight:600; }
-  .dot { width:10px; height:10px; border-radius:50%; background:var(--dim); }
-  .dot.on { background:var(--ok); } .dot.busy { background:var(--acc); }
-  .fw { border-top:1px solid var(--line); padding:12px 0; }
+  button, select, input[type=number] { font:600 1rem var(--px); color:var(--shade); background:var(--gold); border:0; padding:9px 14px;
+           cursor:pointer; box-shadow:3px 3px 0 var(--shade); }
+  button:active { transform:translate(2px, 2px); box-shadow:1px 1px 0 var(--shade); }
+  button.ghost, select, input[type=number] { background:var(--win2); color:var(--ink); box-shadow:inset 0 0 0 2px var(--frame), 3px 3px 0 var(--shade); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  input[type=file] { color:var(--dim); max-width:100%; font:inherit; }
+  input[type=file]::file-selector-button { font:600 1rem var(--px); background:var(--win2); color:var(--ink); border:0; padding:8px 12px;
+           box-shadow:inset 0 0 0 2px var(--frame); margin-right:10px; cursor:pointer; }
+  pre { white-space:pre-wrap; background:var(--shade); padding:12px; margin:12px 0 0; min-height:3em; font:15px/1.45 var(--px); color:var(--ink);
+        box-shadow:inset 0 0 0 2px #2a3490; }
+  progress { width:100%; height:14px; margin-top:10px; appearance:none; border:0; background:var(--shade); box-shadow:inset 0 0 0 2px var(--frame); }
+  progress::-webkit-progress-bar { background:var(--shade); }
+  progress::-webkit-progress-value { background:repeating-linear-gradient(90deg, var(--gold) 0 10px, #e9b92c 10px 12px); }
+  progress::-moz-progress-bar { background:var(--gold); }
+  .hint { color:var(--gold); margin:10px 0 0; }
+  details > summary { cursor:pointer; color:var(--ink); list-style:none; }
+  details > summary::before { content:'▶ '; color:var(--gold); }
+  details[open] > summary::before { content:'▼ '; }
+  label.ok { display:flex; gap:10px; align-items:flex-start; color:var(--dim); }
+  label.ok input { margin-top:5px; accent-color:var(--gold); }
+  .lib { margin-top:14px; }
+  .lib label.ok { padding:3px 0; color:var(--ink); }
+  .fw { border-top:2px dashed #3a46b8; padding:12px 0; }
   .fw:first-of-type { border-top:0; padding-top:0; }
   .fw b { display:block; } .fw small { color:var(--dim); display:block; word-break:break-word; }
-  .tag { font-size:.75rem; color:var(--acc); border:1px solid var(--acc); border-radius:99px; padding:1px 8px; margin-left:6px; font-weight:500; }
-  label.ok { display:flex; gap:10px; align-items:flex-start; color:var(--dim); margin-top:4px; }
-  label.ok input { margin-top:4px; }
-  input[type=file] { color:var(--dim); max-width:100%; }
-  pre { white-space:pre-wrap; background:#0e1013; border:1px solid var(--line); border-radius:8px; padding:12px; margin:12px 0 0; min-height:3em; font:13px/1.45 ui-monospace, Consolas, monospace; color:var(--text); }
-  progress { width:100%; height:10px; margin-top:10px; accent-color:var(--acc); }
-  a { color:var(--acc); }
-  .hint { color:var(--acc); margin:0 0 10px; font-size:.9rem; }
-  ol { margin:6px 0 10px 20px; padding:0; color:var(--dim); }
-  [hidden] { display:none !important; }
-  table.keys { border-collapse:collapse; font-size:.9rem; color:var(--dim); margin:6px 0; }
-  table.keys td { padding:3px 10px 3px 0; vertical-align:top; }
-  table.keys td:first-child { color:var(--text); white-space:nowrap; }
+  .tag { font-size:.8rem; color:var(--gold); box-shadow:inset 0 0 0 2px var(--gold); padding:1px 7px; margin-left:6px; font-weight:400; }
+  ol, ul { margin:6px 0 10px 22px; padding:0; color:var(--dim); }
+  .install .cols { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:18px; }
+
+  /* le FM-1 dessiné */
+  .fm1 { --u:clamp(3px, calc(100cqw / 118), 9px); background:linear-gradient(170deg, var(--plastic) 0%, var(--plastic2) 100%); border-radius:calc(var(--u) * 3);
+         padding:calc(var(--u) * 3); color:#2a2c33; box-shadow:0 calc(var(--u) * 1.2) 0 #8f897c, 8px 14px 0 var(--shade); user-select:none; }
+  .fm1 .upper { display:grid; grid-template-columns:auto auto minmax(0, 1fr); gap:calc(var(--u) * 3); align-items:start; }
+  .fm1 .left { display:grid; grid-template-columns:repeat(2, auto); gap:calc(var(--u) * 1.6) calc(var(--u) * 2.4); }
+  .fm1 .right { display:grid; gap:calc(var(--u) * 2); }
+  .fm1 .knobs { display:grid; grid-template-columns:repeat(4, 1fr); gap:calc(var(--u) * 1.6); }
+  .fm1 .btns { display:grid; grid-template-columns:repeat(6, 1fr); gap:calc(var(--u) * 1.2); }
+  .ctl { display:flex; flex-direction:column; align-items:center; gap:calc(var(--u) * .6); background:none; border:0; box-shadow:none; padding:0;
+         color:#2a2c33; font:600 calc(var(--u) * 1.5)/1.1 var(--px); cursor:pointer; text-align:center; }
+  .ctl:active { transform:none; box-shadow:none; }
+  .ctl .cap { width:calc(var(--u) * 7); height:calc(var(--u) * 7); border-radius:50%; position:relative;
+              background:radial-gradient(circle at 35% 30%, #5a5d66, #1d1f24 70%); box-shadow:0 calc(var(--u) * .5) 0 #111, inset 0 0 0 2px #0c0d10; }
+  .ctl .cap::after { content:''; position:absolute; left:50%; top:12%; width:2px; height:32%; background:#e8e4da; transform:translateX(-50%); }
+  .ctl.btn .cap { width:calc(var(--u) * 5.4); height:calc(var(--u) * 3.4); border-radius:calc(var(--u) * .8); background:linear-gradient(#3b3e46, #22242a); }
+  .ctl.btn .cap::after { display:none; }
+  .ctl .fn { font:400 calc(var(--u) * 1.45)/1.15 var(--px); color:#5b5442; min-height:2.3em; max-width:calc(var(--u) * 10); }
+  .ctl.fixed { cursor:default; opacity:.75; }
+  .ctl.sel .cap { box-shadow:0 0 0 3px var(--gold), 0 0 0 6px var(--shade); }
+  .ctl.sel .fn { color:#000; }
+  .ctl.pot .cap { background:radial-gradient(circle at 35% 30%, #f1eee7, #a9a49a 72%); }
+  .screen { width:calc(var(--u) * 26); aspect-ratio:1; background:#06081f; border-radius:calc(var(--u) * .6);
+            box-shadow:inset 0 0 0 calc(var(--u) * .8) #15171c, 0 0 0 2px #77726a; padding:calc(var(--u) * 1.8); color:var(--ink);
+            font:400 calc(var(--u) * 1.7)/1.3 var(--px); display:flex; flex-direction:column; overflow:hidden; }
+  .screen .ttl { color:var(--gold); font-weight:600; margin-bottom:calc(var(--u) * .6); }
+  .screen .menu { overflow:auto; flex:1; scrollbar-width:thin; }
+  .screen .menu button { display:block; width:100%; text-align:left; background:none; color:var(--ink); box-shadow:none; padding:calc(var(--u) * .25) 0;
+            font:400 calc(var(--u) * 1.7)/1.25 var(--px); }
+  .screen .menu button::before { content:'  '; white-space:pre; color:var(--gold); }
+  .screen .menu button.on { color:var(--gold); }
+  .screen .menu button.on::before { content:'▶ '; }
+  .screen .menu button:hover { color:var(--gold); }
+  .keys { display:flex; position:relative; margin-top:calc(var(--u) * 3); height:calc(var(--u) * 9); }
+  .keys .w { flex:1; background:#f6f3ec; margin:0 1px; border-radius:0 0 calc(var(--u) * .6) calc(var(--u) * .6); box-shadow:inset 0 -3px 0 #c9c3b6;
+             display:flex; align-items:flex-end; justify-content:center; font:400 calc(var(--u) * 1.3)/1 var(--px); color:#6a6455; padding-bottom:4px; }
+  .keys .b { position:absolute; top:0; height:58%; background:#24262c; border-radius:0 0 4px 4px; display:flex; align-items:flex-end; justify-content:center;
+            font:400 calc(var(--u) * 1.15)/1 var(--px); color:#cfc9bb; padding-bottom:3px; }
+  .deck-actions { margin-top:18px; }
+  .legend { color:var(--dim); margin:12px 0 0; }
+  @container (max-width:560px) { .fm1 .upper { grid-template-columns:1fr; justify-items:center; } .fm1 { --u:clamp(4px, calc(100cqw / 62), 8px); } }
+  @media (prefers-reduced-motion:reduce) { * { transition:none !important; } }
 </style>
 </head>
 <body>
-<main>
-  <h1><span>ROM</span>sounds</h1>
-  <p class="sub">Changer le firmware du M-VAVE FM-1 depuis le téléphone ou l’ordinateur (Chrome ou Edge, câble USB).</p>
+<header class="top">
+  <h1 class="logo">ROMsounds</h1>
+  <p class="tagline">Les musiques de la Mega Drive, de la Master System, de la Game Gear, de la Game Boy et de la NES, jouées par ton FM-1.</p>
+  <div class="status">
+    <span class="state"><span class="dot" id="dot"></span><span id="state">Non détecté</span></span>
+    <button class="ghost" id="detect">Détecter le FM-1</button>
+  </div>
+</header>
 
-  <section>
-    <h2>FM-1</h2>
-    <div class="row">
-      <span class="state grow"><span class="dot" id="dot"></span><span id="state">Non détecté</span></span>
-      <button class="ghost" id="detect">Détecter le FM-1</button>
+<main>
+  <section class="win deck" aria-labelledby="deckTitle">
+    <h2 id="deckTitle">Commandes des effets</h2>
+    <p class="sub">Choisis une molette ou un bouton sur le FM-1 ci-dessous, puis sa fonction dans l’écran. Les touches du clavier coupent les voix ; tenir SAVE ou le bouton « Rappeler un preset » et appuyer sur une des 12 premières touches enregistre ou rappelle un preset.</p>
+    <div class="fm1" id="fm1"></div>
+    <p class="legend">Les numéros des touches : les voix, de gauche à droite, et avec SAVE ou « Rappeler un preset », les presets 1 à 12.</p>
+    <div class="row deck-actions">
+      <button id="mapSend" disabled>Enregistrer dans le FM-1</button>
+      <button class="ghost" id="mapReset">Revenir aux réglages d’origine</button>
+      <span class="sub grow" id="mapInfo" style="margin:0"></span>
     </div>
-    <div id="libRow" hidden style="margin-top:10px">
-      <progress id="libBar" max="1" value="0" style="width:100%"></progress>
-      <p class="sub" id="libText" style="margin:4px 0 0"></p>
-      <details id="libDetails" style="margin-top:6px">
+  </section>
+
+  <section class="win player" aria-labelledby="playerTitle">
+    <h2 id="playerTitle">Lecteur</h2>
+    <p class="sub">Choisis un fichier VGM ou VGZ, ou un pack .zip, puis envoie-le : le FM-1 le joue aussitôt et le garde en mémoire, même éteint. La molette SELECT change de morceau, REC maintenu 2 s en retire un.</p>
+    <div class="row">
+      <input type="file" id="vgmFile" accept=".vgm,.vgz,.zip" class="grow">
+    </div>
+    <div class="row" id="vgmPickRow" hidden style="margin-top:10px">
+      <select id="vgmPick" class="grow" aria-label="Morceau du pack"></select>
+    </div>
+    <div class="row" id="vgmBpmRow" hidden style="margin-top:10px">
+      <label for="vgmBpm">Tempo pour le beat roll</label>
+      <input type="number" id="vgmBpm" min="30" max="400" step="0.5" style="width:7em"> <span class="sub" style="margin:0">BPM</span>
+      <span class="sub grow" id="vgmBpmNote" style="margin:0"></span>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="vgmSend" disabled>Envoyer au FM-1</button>
+    </div>
+    <p class="hint" id="vgmPlan" hidden></p>
+    <progress id="vgmBar" max="100" value="0" hidden></progress>
+    <pre id="vgmLog">Aucun fichier.</pre>
+
+    <div id="libRow" class="lib" hidden>
+      <progress id="libBar" max="1" value="0"></progress>
+      <p class="sub" id="libText" style="margin:6px 0 0"></p>
+      <details id="libDetails" style="margin-top:8px">
         <summary>Morceaux dans le FM-1</summary>
         <div id="libList" style="margin:8px 0"></div>
         <button class="ghost" id="libDel" disabled>Retirer la sélection</button>
       </details>
     </div>
-  </section>
 
-  <section>
-    <h2>Lecteur Mega Drive · Master System · Game Gear · Game Boy · NES</h2>
-    <p class="sub" style="margin:0 0 10px">Avec ROMsounds sur le FM-1 : choisis un fichier VGM (ou VGZ) de musique Mega Drive, Master System, Game Gear, Game Boy ou NES, puis envoie-le. Le FM-1 le joue aussitôt et le garde en mémoire, même éteint (environ 290 Ko pour la bibliothèque). S’il manque de la place, la page te demande quels morceaux retirer (liste « Morceaux dans le FM-1 », en haut). Sur le FM-1 : OCT− / OCT+ ou SELECT pour changer de morceau, REC maintenu 2 s pour en retirer un.</p>
-    <div class="row">
-      <input type="file" id="vgmFile" accept=".vgm,.vgz,.zip" class="grow">
-      <button id="vgmSend" disabled>Envoyer au FM-1</button>
-    </div>
-    <div class="row" id="vgmPickRow" hidden>
-      <select id="vgmPick" class="grow" aria-label="Morceau du pack"></select>
-    </div>
-    <p class="hint" id="vgmPlan" hidden></p>
-    <progress id="vgmBar" max="100" value="0" hidden></progress>
-    <pre id="vgmLog">Aucun fichier.</pre>
-    <details style="margin-top:10px">
-      <summary>Effets sur le FM-1</summary>
-      <p class="sub" style="margin:8px 0 6px">Pendant la lecture, en direct. Les effets restent d’un morceau à l’autre ; HOME remet tout à zéro. L’écran affiche le réglage quand tu tournes une molette, et en bas ceux qui sont en route.</p>
-      <table class="keys">
-        <tr><td>Touches du clavier</td><td>Couper / remettre une voix (de gauche à droite). Mega Drive : FM 1 à 6, DAC (batterie), PSG 1 à 3, bruit. Master System, Game Gear : PSG 1 à 3, bruit. Game Boy : carré 1, carré 2, onde, bruit. NES : carré 1, carré 2, triangle, bruit, DPCM. Une touche allumée = une voix qui joue.</td></tr>
-        <tr><td>SEL + touche</td><td>Cette voix seule (solo) ; recommencer : toutes les voix.</td></tr>
-        <tr><td>Molette 1 (KNOB 1)</td><td>Tempo, de 25 % à 200 %, sans changer la hauteur.</td></tr>
-        <tr><td>Molette 2 (KNOB 2)</td><td>Hauteur, en demi-tons, sans changer le tempo (−12 à +12 ; Mega Drive : jusqu’à +5, le calcul monte vite).</td></tr>
-        <tr><td>Molette 3 (KNOB 3)</td><td>Filtre : à gauche passe-bas (son étouffé), à droite passe-haut (son fin), au milieu éteint.</td></tr>
-        <tr><td>Molette 4 (KNOB 4)</td><td>Écho (0 à 10).</td></tr>
-        <tr><td>ALGORITHM</td><td>Temps de l’écho et de la boucle (50 à 550 ms).</td></tr>
-        <tr><td>PRESETS</td><td>Grain : son de plus en plus « 8 bits » (0 à 12).</td></tr>
-        <tr><td>FX maintenu</td><td>Boucle : rejoue en boucle le dernier instant tant que tu tiens ; au relâché, le morceau reprend où il en est.</td></tr>
-        <tr><td>HOME</td><td>Remettre tous les effets à zéro.</td></tr>
-      </table>
-      <p class="sub" style="margin:0">Écho et boucle : pour les morceaux de moins de 170 Ko (presque tous).</p>
-    </details>
-    <details style="margin-top:10px">
+    <details style="margin-top:16px">
       <summary>Où trouver des musiques ?</summary>
-      <p class="sub" style="margin:8px 0 6px">Les sites ci-dessous proposent les bandes son de jeux au format VGM, souvent en « packs » .zip d’un jeu entier : choisis directement le .zip ici, puis le morceau dans la liste.</p>
-      <ul style="margin:0 0 6px 20px; padding:0; color:var(--dim)">
-        <li><a href="https://vgmrips.net/" rel="noopener" target="_blank">VGMRips</a> : la plus grande collection (Mega Drive, Master System, Game Gear, Game Boy, NES et bien d’autres) ; parcourir par console :
-          <a href="https://vgmrips.net/packs/system/nintendo/game-boy" rel="noopener" target="_blank">Game Boy</a> ·
+      <p class="sub" style="margin:8px 0 6px">Ces sites proposent les bandes son de jeux au format VGM, souvent en packs .zip d’un jeu entier : choisis directement le .zip ici, puis le morceau dans la liste.</p>
+      <ul>
+        <li><a href="https://vgmrips.net/" rel="noopener" target="_blank">VGMRips</a> : la plus grande collection. Par console :
+          <a href="https://vgmrips.net/packs/system/nintendo/game-boy" rel="noopener" target="_blank">Game Boy</a>,
           <a href="https://vgmrips.net/packs/system/nintendo/nintendo-entertainment-system" rel="noopener" target="_blank">NES</a>.</li>
-        <li><a href="https://www.smspower.org/Music/" rel="noopener" target="_blank">SMS Power</a> : Master System et Game Gear (le site d’origine du format VGM).</li>
+        <li><a href="https://www.smspower.org/Music/" rel="noopener" target="_blank">SMS Power</a> : Master System et Game Gear.</li>
       </ul>
-      <p class="sub" style="margin:0">ROMsounds joue les packs dont les puces sont YM2612, SN76489 (SEGA PSG), Game Boy DMG ou NES APU. Les packs « FDS » ou avec des puces de cartouche en plus (VRC6, N163…) jouent sans ces voies-là.</p>
+      <p class="sub" style="margin:0">ROMsounds joue les puces YM2612, SN76489 (PSG Sega), Game Boy DMG et NES APU. Les packs « FDS » ou avec des puces de cartouche en plus (VRC6, N163…) jouent sans ces voies-là.</p>
     </details>
   </section>
 
-  <section>
-    <h2>Installer un firmware</h2>
+  <section class="win help" aria-labelledby="helpTitle">
+    <h2 id="helpTitle">Sur le FM-1, pendant la lecture</h2>
+    <ul style="color:var(--ink)">
+      <li>Touches du clavier : couper ou remettre une voix, de gauche à droite (Mega Drive : FM 1 à 6, DAC, PSG 1 à 3, bruit ; Master System, Game Gear : PSG 1 à 3, bruit ; Game Boy : carré 1, carré 2, onde, bruit ; NES : carré 1, carré 2, triangle, bruit, DPCM). Allumée : la voix joue ; faible et un clin d’œil par seconde : elle est coupée.</li>
+      <li>Solo + touche : cette voix seule ; recommencer : toutes les voix.</li>
+      <li>Boucle, beat roll : tant que le bouton est tenu ; au relâché, le morceau reprend où il en est. Le beat roll se cale sur le tempo indiqué à l’envoi.</li>
+      <li>Vinyl brake : la platine ralentit jusqu’à l’arrêt ; PLAY (ou le même bouton) relance.</li>
+      <li>Les effets restent d’un morceau à l’autre ; « Tout remettre à zéro » les éteint.</li>
+      <li>Écho, boucle, beat roll et backspin : pour les morceaux de moins de 140 Ko (presque tous).</li>
+    </ul>
+  </section>
+
+  <section class="win install" aria-labelledby="installTitle">
+    <h2 id="installTitle">Installer un firmware</h2>
     <label class="ok" style="margin:0 0 12px"><input type="checkbox" id="okBox"> <span>J’ai compris : l’installation remplace le firmware en place et efface ce qu’il a enregistré. Ne rien débrancher pendant l’écriture.</span></label>
-    <p class="hint" id="hint">Coche la case ci-dessus pour activer les boutons « Installer ».</p>
-    <div id="catalog"></div>
-    <div class="fw">
-      <b>Un fichier .fwsc de l’appareil</b>
-      <small>Firmware Felucca, Dinghy ou dérivé, ou firmware officiel M-VAVE non modifié (V15, V16).</small>
-      <div class="row" style="margin-top:8px">
-        <input type="file" id="file" accept=".fwsc" class="grow">
-        <button id="fileInstall" disabled>Installer</button>
+    <p class="hint" id="hint" style="margin:0 0 12px">Coche la case ci-dessus pour activer les boutons « Installer ».</p>
+    <div class="cols">
+      <div id="catalog"></div>
+      <div>
+        <div class="fw">
+          <b>Un fichier .fwsc de l’appareil</b>
+          <small>Firmware Felucca, Dinghy ou dérivé, ou firmware officiel M-VAVE non modifié (V15, V16).</small>
+          <div class="row" style="margin-top:8px">
+            <input type="file" id="file" accept=".fwsc" class="grow">
+            <button id="fileInstall" disabled>Installer</button>
+          </div>
+        </div>
+        <div class="fw">
+          <b>Revenir au firmware officiel</b>
+          <ol>
+            <li><a href="https://yms-file-store.oss-cn-hongkong.aliyuncs.com/software/firmware/FM-1.fwsc" rel="noopener">Télécharger FM-1.fwsc chez M-VAVE</a> (toujours la dernière version).</li>
+            <li>Le choisir dans « Un fichier .fwsc de l’appareil », puis Installer.</li>
+          </ol>
+        </div>
       </div>
-    </div>
-    <div class="fw">
-      <b>Revenir au firmware officiel</b>
-      <ol>
-        <li><a href="https://yms-file-store.oss-cn-hongkong.aliyuncs.com/software/firmware/FM-1.fwsc" rel="noopener">Télécharger FM-1.fwsc chez M-VAVE</a> (toujours la dernière version).</li>
-        <li>Le choisir ci-dessus, dans « Un fichier .fwsc de l’appareil », puis Installer.</li>
-      </ol>
     </div>
     <progress id="bar" max="100" value="0" hidden></progress>
     <pre id="log">Prêt.</pre>
@@ -156,7 +253,7 @@ const nameOf = id => { for (const [re, n] of NAMES) if (re.test(id)) return n; r
 const label = id => id + ' · ' + nameOf(id);
 
 const log = $('log'), bar = $('bar'), okBox = $('okBox'), file = $('file');
-let busy = false, access = null, filePkg = null, expected = null;
+let busy = false, access = null, filePkg = null, expected = null, mapDirty = false;
 const write = t => { log.textContent = t; };
 const kb = n => Math.round(n / 1024) + ' Ko';
 const hex = async raw => [...new Uint8Array(await crypto.subtle.digest('SHA-256', raw))].map(x => x.toString(16).padStart(2, '0')).join('');
@@ -299,6 +396,7 @@ async function detect() {
     const dev = await up.find();
     if (!dev) { showLib(null); setState('Non détecté (ports vus : ' + ([...access.inputs.values()].filter(p => p.state === 'connected').map(p => p.name).join(', ') || 'aucun') + ')'); return; }
     try { showLib(isRs(dev.id) ? (await fetchLib(dev)) || await queryLib(dev) : null); } catch (e) { showLib(null); }
+    try { if (isRs(dev.id) && !mapDirty) { const m = await fetchMap(dev); if (m) { setMap(m, false); mapInfo('Réglages lus dans le FM-1.'); } } } catch (e) { /* (version sans attribution) */ }
     dev.link.close();
     setState(dev.id.loader ? 'En mode mise à jour (' + dev.id.text + ') : relance l’installation pour la terminer' : label(dev.id.text), 'on');
     if (expected && !dev.id.loader) {
@@ -321,6 +419,7 @@ function ready() {
   file.disabled = busy; $('detect').disabled = busy;
   $('vgmSend').disabled = busy || !vgm; $('vgmFile').disabled = busy; $('vgmPick').disabled = busy;
   $('libDel').disabled = busy || !libSel.size;
+  $('mapSend').disabled = busy || !mapDirty;
   $('hint').hidden = okBox.checked;
 }
 
@@ -418,6 +517,9 @@ async function showVgm(u, name) {
     if (v.blob.length > VGM_MAX) throw new Error('trop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus)');
     vgm = v;
     $('vgmLog').textContent = lines.filter(Boolean).join('\n');
+    $('vgmBpmRow').hidden = false;
+    $('vgmBpm').value = v.bpm || 120;
+    $('vgmBpmNote').textContent = v.bpm ? 'deviné d’après les notes ; corrige-le si le beat roll tombe à côté' : 'pas deviné : 120 par défaut';
     planVgm();
   } catch (e) { $('vgmLog').textContent = 'Fichier refusé : ' + (e.message || e); }
   ready();
@@ -425,7 +527,7 @@ async function showVgm(u, name) {
 
 $('vgmFile').addEventListener('change', async () => {
   const f = $('vgmFile').files && $('vgmFile').files[0];
-  vgm = null; pack = []; $('vgmBar').hidden = true; $('vgmPickRow').hidden = true;
+  vgm = null; pack = []; $('vgmBar').hidden = true; $('vgmPickRow').hidden = true; $('vgmBpmRow').hidden = true;
   if (!f) { $('vgmLog').textContent = 'Aucun fichier.'; ready(); return; }
   const u = new Uint8Array(await f.arrayBuffer());
   if (u[0] === 0x50 && u[1] === 0x4B) {         // .zip : un pack
@@ -469,12 +571,14 @@ async function sendVgm() {
       if (!pl.ok) { planVgm(); throw new Error('pas assez de place dans le FM-1 : coche dans « Morceaux dans le FM-1 » (en haut) les morceaux à retirer, puis renvoie.'); }
       if (pl.deficit || pl.full) await removeOn(sel, aw, log);
     }
+    const bpm = +$('vgmBpm').value;
+    RSVGM.setBpm(vgm.blob, bpm >= 30 && bpm <= 400 ? bpm : 0);
     const fr = vgmFrames(vgm.blob, vgm.title, vgm.game, FM1OTA.pack7, vgm.sys);
     acks.length = 0;
     send(fr.begin);
-    const hello = await waitAck(117, v => v === 1 || v === 2 || v === 4, 2000);
+    const hello = await waitAck(117, v => v === 1 || v === 2 || v === 4 || v === 5, 2000);
     if (hello === null) throw new Error('le FM-1 ne répond pas au début de l’envoi');
-    if (hello !== 4) throw new Error('ROMsounds sur le FM-1 est une ancienne version, qui ne lit pas ce format : réinstalle ROMsounds (section « Installer un firmware »), puis renvoie le morceau.');
+    if (hello !== 5) throw new Error('ROMsounds sur le FM-1 est une ancienne version, qui ne lit pas ce format : réinstalle ROMsounds (section « Installer un firmware »), puis renvoie le morceau.');
     const n = fr.data.length, t0 = Date.now();
     for (let seq = 0; seq < n; seq++) {
       const frame = fr.data[seq];
@@ -497,7 +601,7 @@ async function sendVgm() {
   }
 }
 $('vgmSend').addEventListener('click', sendVgm);
-if (location.protocol === 'file:') window.RSPAGE = { showLib, planVgm, setVgm: v => { vgm = v; } };   // (essais hors ligne)
+if (location.protocol === 'file:') window.RSPAGE = { showLib, planVgm, setVgm: v => { vgm = v; }, setMap: m => setMap(m, false) };   // (essais hors ligne)
 
 /* les accusés de ROMsounds (CC 117 / 118 sur le canal 16), pour un envoi ou un retrait */
 function ackWaiter(dev) {
@@ -561,6 +665,107 @@ file.addEventListener('change', async () => {
 $('fileInstall').addEventListener('click', () => { if (filePkg) install(async () => filePkg); });
 okBox.addEventListener('change', ready);
 $('detect').addEventListener('click', detect);
+
+/* ---------- le FM-1 dessiné : attribuer molettes et boutons (firmware : SysEx 07 / 08, romsounds.c) ---------- */
+const ENC_FN = ['Aucune', 'Tempo', 'Hauteur', 'Filtre (passe-bas, passe-haut)', 'Écho (répétitions)', 'Temps de l’écho et de la boucle', 'Grain', 'Phaser, flanger'];
+const ENC_SHORT = ['—', 'Tempo', 'Hauteur', 'Filtre', 'Écho', 'Temps', 'Grain', 'Phaser / flanger'];
+const BTN_FN = ['Aucune', 'Hauteur −1', 'Hauteur +1', 'Boucle (tenir)', 'Beat roll ½ temps (tenir)', 'Beat roll 1 temps (tenir)', 'Vinyl brake',
+  'Backspin', 'Tout remettre à zéro', 'Enregistrer un preset (+ touche)', 'Rappeler un preset (+ touche)', 'Solo (+ touche)', 'Morceau précédent', 'Morceau suivant'];
+const BTN_SHORT = ['—', 'Hauteur −', 'Hauteur +', 'Boucle', 'Roll ½', 'Roll 1', 'Brake', 'Backspin', 'Remise à 0', 'Save preset', 'Rappel preset', 'Solo', 'Précédent', 'Suivant'];
+const ENC_NAMES = ['KNOB 1', 'KNOB 2', 'KNOB 3', 'KNOB 4', 'ALGORITHM', 'PRESETS'];
+const BTN_NAMES = ['OCT−', 'OCT+', 'FX', 'SEL', 'ENV', 'LFO', 'EDIT', 'GLO', 'HOME', 'SAVE', 'ARP', 'SEQ'];
+const MAP_DEF = { enc: [1, 7, 6, 3, 5, 4], btn: [1, 2, 3, 11, 7, 6, 10, 0, 8, 9, 4, 5] };
+let map = { enc: [...MAP_DEF.enc], btn: [...MAP_DEF.btn] }, pick = null;
+const mapInfo = t => { $('mapInfo').textContent = t; };
+function setMap(m, dirty) { map = { enc: [...m.enc], btn: [...m.btn] }; mapDirty = dirty; drawFm1(); ready(); }
+async function fetchMap(dev) {
+  let got = null, done;
+  const wait = new Promise(r => { done = r; });
+  const on = m => { const d = m.data; if (d[0] === 0xF0 && d[1] === 0x7D && d[2] === 0x52 && d[3] === 0x53 && d[4] === 0x18 && d.length >= 24) { got = { enc: [...d.slice(5, 11)], btn: [...d.slice(11, 23)] }; done(); } };
+  dev.link.input.addEventListener('midimessage', on);
+  try { if (!dev.link.send([0xF0, 0x7D, 0x52, 0x53, 0x08, 0xF7])) return null; await Promise.race([wait, new Promise(r => setTimeout(r, 1500))]); }
+  finally { dev.link.input.removeEventListener('midimessage', on); }
+  return got;
+}
+function control(kind, i, name, fixed) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'ctl' + (kind === 'btn' ? ' btn' : '') + (fixed ? ' fixed' : '') + (kind === 'pot' ? ' pot' : '');
+  const fn = fixed ? fixed : kind === 'enc' ? ENC_SHORT[map.enc[i]] : BTN_SHORT[map.btn[i]];
+  b.innerHTML = '<span class="cap"></span><span></span><span class="fn"></span>';
+  b.children[1].textContent = name; b.children[2].textContent = fn;
+  b.setAttribute('aria-label', name + ' : ' + (fixed || (kind === 'enc' ? ENC_FN[map.enc[i]] : BTN_FN[map.btn[i]])));
+  if (pick && pick.kind === kind && pick.i === i) b.classList.add('sel');
+  if (!fixed) b.addEventListener('click', () => { pick = { kind, i }; drawFm1(); const f = $('fm1').querySelector('.screen .menu button.on'); if (f) f.focus(); });
+  return b;
+}
+function drawFm1() {
+  const box = $('fm1');
+  box.replaceChildren();
+  const up = document.createElement('div'); up.className = 'upper';
+  const left = document.createElement('div'); left.className = 'left';
+  left.append(control('pot', 0, 'MASTER', 'Volume'), control('enc', -1, 'SELECT', 'Morceaux'),
+              control('enc', 5, 'PRESETS'), control('enc', 4, 'ALGORITHM'), control('btn', 0, 'OCT−'), control('btn', 1, 'OCT+'));
+  const scr = document.createElement('div'); scr.className = 'screen';
+  const ttl = document.createElement('div'); ttl.className = 'ttl';
+  const menu = document.createElement('div'); menu.className = 'menu';
+  if (!pick) {
+    ttl.textContent = 'ROMSOUNDS';
+    menu.textContent = 'Choisis une molette ou un bouton : sa fonction s’affiche ici.';
+  } else {
+    const isEnc = pick.kind === 'enc', list = isEnc ? ENC_FN : BTN_FN, cur = isEnc ? map.enc[pick.i] : map.btn[pick.i];
+    ttl.textContent = isEnc ? ENC_NAMES[pick.i] : BTN_NAMES[pick.i];
+    list.forEach((t, k) => {
+      const o = document.createElement('button'); o.type = 'button'; o.textContent = t; if (k === cur) o.className = 'on';
+      o.addEventListener('click', () => { (isEnc ? map.enc : map.btn)[pick.i] = k; mapDirty = true; mapInfo('Pas encore dans le FM-1 : « Enregistrer dans le FM-1 ».'); drawFm1(); ready(); });
+      menu.append(o);
+    });
+  }
+  scr.append(ttl, menu);
+  const right = document.createElement('div'); right.className = 'right';
+  const knobs = document.createElement('div'); knobs.className = 'knobs';
+  for (let i = 0; i < 4; i++) knobs.append(control('enc', i, ENC_NAMES[i]));
+  const btns = document.createElement('div'); btns.className = 'btns';
+  [2, 3, 4, 5, 6, 7].forEach(i => btns.append(control('btn', i, BTN_NAMES[i])));
+  [8, 9, 10, 11].forEach(i => btns.append(control('btn', i, BTN_NAMES[i])));
+  btns.append(control('btn', -1, 'PLAY', 'Lecture'), control('btn', -2, 'REC', 'Début'));
+  right.append(knobs, btns);
+  up.append(left, scr, right);
+  const keys = document.createElement('div'); keys.className = 'keys';
+  const white = [];
+  for (let k = 0; k < 27; k++) {                          // F3 .. G5 : 27 touches, dont 16 blanches
+    const n = (k + 5) % 12, isBlack = [1, 3, 6, 8, 10].includes(n);
+    if (!isBlack) { const w = document.createElement('div'); w.className = 'w'; w.textContent = String(k + 1); keys.append(w); white.push(k); }
+  }
+  const nW = white.length;
+  for (let k = 0, w = 0; k < 27; k++) {
+    const n = (k + 5) % 12, isBlack = [1, 3, 6, 8, 10].includes(n);
+    if (!isBlack) { w++; continue; }
+    const b = document.createElement('div'); b.className = 'b'; b.textContent = String(k + 1);
+    b.style.left = 'calc(' + (w / nW * 100) + '% - ' + (0.32 / nW * 100) + '%)'; b.style.width = (0.64 / nW * 100) + '%';
+    keys.append(b);
+  }
+  box.append(up, keys);
+  const on = menu.querySelector('.on');
+  if (on) menu.scrollTop = Math.max(0, on.offsetTop - menu.offsetTop - menu.clientHeight / 3);
+}
+$('mapReset').addEventListener('click', () => { pick = null; setMap(MAP_DEF, true); mapInfo('Réglages d’origine : « Enregistrer dans le FM-1 » pour les y mettre.'); });
+$('mapSend').addEventListener('click', async () => {
+  if (busy) return;
+  let acc, dev = null, aw = null;
+  try { acc = await midi(); } catch (e) { mapInfo(e.message); return; }
+  busy = true; ready();
+  try {
+    dev = await new FM1OTA.Updater(acc).find(isRs);
+    if (!dev) throw new Error('ROMsounds ne répond pas : installe ROMsounds sur le FM-1');
+    aw = ackWaiter(dev);
+    aw.send([0xF0, 0x7D, 0x52, 0x53, 0x07, ...map.enc, ...map.btn, 0xF7]);
+    if (await aw.waitAck(117, v => v === 7, 4000) === null) throw new Error('le FM-1 n’a pas répondu (ROMsounds trop ancien ? réinstalle-le)');
+    mapDirty = false; mapInfo('Enregistré dans le FM-1.');
+  } catch (e) { mapInfo('Échec : ' + (e.message || e)); }
+  finally { if (aw) aw.stop(); if (dev) dev.link.close(); busy = false; ready(); }
+});
+drawFm1();
 
 // Détection automatique si l'accès MIDI (SysEx) est déjà autorisé
 (async () => {

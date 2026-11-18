@@ -96,7 +96,8 @@ jobs:
           # la bibliothèque vue par la page : liste (SysEx 05), place pour D, retrait de B (06)
           node ../tests/lib_test.js
           # effets : tempo 200 % (fréquences de build/gb.rsm deux fois plus tôt), voix coupées, solo (SEL + touche),
-          # hauteur +12, passe-bas 150 Hz, écho, boucle (FX tenu), HOME, grain
+          # hauteur +12 (OCT+), passe-bas 150 Hz, écho, boucle (FX tenu), HOME, grain, flanger / phaser, beat roll,
+          # vinyl brake (arrêt, PLAY relance), backspin (à l'envers, plus aigu), presets (SAVE / EDIT + touche)
           fx() { s=$1; f=$2; shift 2; ROMSOUNDS_RSM=build/$f.rsm sh tests/run_host.sh tests/scripts/$s.txt > /dev/null; node ../tests/wav_check.js build/host/romsounds.wav "$@"; }
           fx fx_tempo gb 0.05-0.45:~440 0.55-0.75:~880 1.25-1.45:~262
           fx fx_voix test 0.2-1.8:0 2.2-2.9:2000
@@ -105,6 +106,16 @@ jobs:
           fx fx_filtre gb 0.2-0.9:1/2000
           fx fx_echo gb 1.8-1.95:1 3.4-3.9:1 4.5-5.9:0
           fx fx_grain gb 0.1-0.9:1000
+          fx fx_mod gb 0.1-0.9:1000 1.1-1.9:1
+          fx fx_roll gb 3.5-3.9:1 4.2-4.4:0
+          fx fx_brake gb 0.05-0.25:~440 1.8-2.45:0 2.65-2.8:~880
+          fx fx_spin gb 2.52-2.6:~262 2.75-2.85:~570 2.95-2.999:~262
+          fx fx_preset gb 0.4-0.6:4000 0.9-0.99:1/2000
+          # attribution par la page (SysEx 07, relue par 08) : le filtre sur KNOB1
+          M="03 00 00 00 00 00 01 02 03 0B 07 06 0A 00 08 09 04 05"
+          ROMSOUNDS_SX="0:7D 52 53 07 $M;100:7D 52 53 08" ROMSOUNDS_RSM=build/gb.rsm sh tests/run_host.sh tests/scripts/fx_map.txt > build/map.log
+          grep -q "BF 117 7" build/map.log && grep -q "SYSEX out F0 7D 52 53 18 $M F7" build/map.log
+          node ../tests/wav_check.js build/host/romsounds.wav 0.4-0.9:1/2000
 
       - name: Chaîne JieLi (pkgman.jieliapp.com)
         run: sh tools/get_toolchain.sh

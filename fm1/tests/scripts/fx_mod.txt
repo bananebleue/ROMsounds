@@ -1,0 +1,5 @@
+# ROMsounds, effets : flanger 10 (KNOB2 = encodeur 3) de 0 à 1 s, puis phaser 10 de 1 à 2 s, sur build/gb.rsm
+0 enc 3 10
+1000 enc 3 -20
+1500 shot
+2000 end

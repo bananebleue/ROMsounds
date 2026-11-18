@@ -1,3 +1,14 @@
-# ROMsounds, effets : hauteur +12 (KNOB2 = encodeur 3), sur build/gb.rsm
-0 enc 3 12
+# ROMsounds, effets : hauteur +12 (OCT+ = bouton 1, douze fois), sur build/gb.rsm
+0 btn 1
+10 btn 1
+20 btn 1
+30 btn 1
+40 btn 1
+50 btn 1
+60 btn 1
+70 btn 1
+80 btn 1
+90 btn 1
+100 btn 1
+110 btn 1
 1000 end

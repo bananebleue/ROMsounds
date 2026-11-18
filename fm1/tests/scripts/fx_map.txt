@@ -1,0 +1,3 @@
+# ROMsounds, attribution : la page met le filtre sur KNOB1 (SysEx 07, ROMSOUNDS_SX) ; KNOB1 (encodeur 2) -20 : passe-bas
+300 enc 2 -20
+1000 end

@@ -24,9 +24,12 @@ Le FM-1 le joue aussitôt et le **garde en mémoire flash** (bibliothèque d'env
   Ordre de grandeur : un morceau Mega Drive 15-40 Ko, Game Boy ou NES 1-10 Ko (40 morceaux au plus).
 - La page lit la liste des morceaux du FM-1 (SysEx 05 ; réponse : un SysEx 0x15 par morceau, puis 0x16 pour la place)
   et en retire à la demande (06 + CRC) ; quand un morceau n'entre pas, elle demande lesquels retirer avant l'envoi.
-- Effets en direct (`fx.h` et `romsounds.c`) : touches = voix coupées (SEL + touche : solo), KNOB1 tempo, KNOB2
-  hauteur, KNOB3 filtre, KNOB4 écho, ALGORITHM temps de l'écho / de la boucle, PRESETS grain, FX tenu = boucle,
-  HOME = tout remettre. Détail sur la page (« Effets sur le FM-1 »).
+- Effets en direct (`fx.h` et `romsounds.c`) : touches = voix coupées (Solo + touche : seule), molettes et boutons
+  attribuables depuis la page (le FM-1 dessiné ; SysEx 07 / 08, gardé dans le blob 1). Par défaut : KNOB1 tempo, KNOB2
+  phaser / flanger, KNOB3 grain, KNOB4 filtre, ALGORITHM temps de l'écho et de la boucle, PRESETS écho (répétitions) ;
+  OCT− / OCT+ hauteur, FX boucle, SEL solo, ENV backspin, LFO vinyl brake, EDIT rappeler un preset, HOME tout remettre,
+  SAVE enregistrer un preset (+ touche 1-12, blob 2), ARP / SEQ beat roll ½ / 1 temps. Le tempo du beat roll : deviné
+  par la page d'après les débuts de notes (RSM3), corrigeable avant l'envoi.
 
 | | |
 | --- | --- |

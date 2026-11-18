@@ -1,0 +1,5 @@
+# ROMsounds, effets : beat roll 1 temps (SEQ = bouton 11) tenu de 2,3 à 3,9 s (l onde 2-3 s rejouée sur le silence 3,4-3,9), sur build/gb.rsm
+2300 btndown 11
+3600 shot
+3900 btnup 11
+4500 end

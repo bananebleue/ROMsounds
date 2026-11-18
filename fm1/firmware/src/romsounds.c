@@ -87,10 +87,14 @@ static uint32_t song_size;                      /* taille du morceau dans vgm_bu
 
 /* ---- effets en direct : tempo (sans changer la hauteur), hauteur (sans changer le tempo), voix coupées, fx.h */
 static fx_t fx;
-static uint32_t tempo = 256;                    /* Q8 : 256 = 100 % (64 .. 512) */
+static uint32_t tempo_cur = 256;                /* Q8 : 256 = 100 % (64 .. 512) */
 static int32_t pitch;                           /* demi-tons, -12 .. +12 (Mega Drive : +5 au plus, le YM2612 coûte) */
 static uint32_t mute;                           /* bit = voix coupée (ordre : FM 1-6, DAC, PSG 1-3, bruit ; GB ; NES) */
 static uint32_t ym_step0, psg_step0, gb_step0, nes_step0;
+static uint32_t speed_q16 = 65536u;             /* vinyl brake : la platine ralentit (tempo et hauteur ensemble) */
+static uint32_t brake, braked;                  /* brake : ralentit ; braked : arrêtée (PLAY ou le bouton : relancer) */
+static int32_t track_turn;                      /* morceau suivant / précédent demandé (molette SELECT, boutons) */
+static uint32_t track_turn_t;
 static const uint32_t SEMI_Q16[25] = {32768, 34716, 36781, 38968, 41285, 43740, 46341, 49097, 52016, 55109, 58386, 61858,
     65536, 69433, 73562, 77936, 82570, 87480, 92682, 98193, 104032, 110218, 116772, 123715, 131072};
 static uint32_t mul_q16(uint32_t a, uint32_t r)  /* a x r / 65536, r <= 2 x 65536, sans débordement */
@@ -158,8 +162,8 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
     const uint8_t *m = vgm_buf;
     uint32_t pcm, a, b;
     uint32_t hl;
-    if (size < 40u || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] != '1' && m[3] != '2')) return 4;
-    hl = m[3] == '1' ? 40u : 48u;              /* RSM1 (avant la Game Boy et la NES) : 40 octets */
+    if (size < 40u || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] != '1' && m[3] != '2' && m[3] != '3')) return 4;
+    hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : 56u;   /* RSM1 : 40 octets ; RSM2 (+ Game Boy, NES) : 48 ; RSM3 (+ tempo) : 56 */
     if (size < hl) return 4;
     pcm = rd32(m + 20); a = rd32(m + 24); b = rd32(m + 28);
     if (hl + pcm + a + b != size || !a) return 4;
@@ -169,6 +173,9 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
     song.psg_cfg = rd32(m + 36);
     song.gb_clock = hl > 40u ? rd32(m + 40) : 0u;
     song.nes_clock = hl > 40u ? rd32(m + 44) : 0u;
+    song.bpm100 = hl > 48u ? rd32(m + 48) : 0u;
+    song.beat0 = hl > 48u ? rd32(m + 52) : 0u;
+    if (song.bpm100 && (song.bpm100 < 3000u || song.bpm100 > 40000u)) song.bpm100 = 0;   /* (30 .. 400 BPM) */
     song.pcm = m + hl; song.pcm_len = pcm;
     part_a = m + hl + pcm; len_a = a;
     part_b = part_a + a; len_b = b;
@@ -202,7 +209,7 @@ static void fx_apply_mute(void)
 }
 static void fx_apply_rate(void)                  /* la hauteur : les puces vont plus ou moins vite que leur horloge */
 {
-    uint32_t r = SEMI_Q16[pitch + 12];
+    uint32_t r = mul_q16(SEMI_Q16[pitch + 12], speed_q16 > 65536u ? 65536u : speed_q16);
     ym_step = mul_q16(ym_step0, r);
     psg.step_q16 = mul_q16(psg_step0, r);
     gb.step_q16 = mul_q16(gb_step0, r);
@@ -236,8 +243,14 @@ static void song_start(void)
 static void render_block(void)                  /* 256 trames à 44,1 kHz dans le tampon */
 {
     static int32_t mix[BLOCK * 2u];
-    uint32_t left = BLOCK, o = 0, i, w = ring_w;
+    uint32_t left = BLOCK, o = 0, i, w = ring_w, tempo = tempo_cur * (speed_q16 >> 8) >> 8;
+    if (!tempo) tempo = 1;
     for (i = 0; i < BLOCK * 2u; i++) mix[i] = 0;
+    if (brake && playing) {                     /* vinyl brake : ~1,2 s jusqu'à l'arrêt */
+        speed_q16 = speed_q16 > 317u + 1500u ? speed_q16 - 317u : 0u;
+        if (!speed_q16) { playing = 0; brake = 0; braked = 1; speed_q16 = 1500u; }
+        fx_apply_rate();
+    }
     while (left && playing) {
         uint32_t n, k = 0, j, p = ym_pos, kk = 0;
         DEV_SMPL *b[2] = {mbuf_l + 1, mbuf_r + 1};
@@ -285,11 +298,39 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
     ring_w = w;
 }
 
+/* ---- attribution des molettes et boutons (page : SysEx 07 / 08 ; blob 1) */
+enum { FN_NONE, FN_TEMPO, FN_PITCH, FN_FILT, FN_ECHO, FN_TIME, FN_GRAIN, FN_MOD, FN_ENC_N };
+enum { FB_NONE, FB_PITCH_DN, FB_PITCH_UP, FB_LOOP, FB_ROLL_HALF, FB_ROLL_BEAT, FB_BRAKE, FB_SPIN, FB_RESET, FB_SAVE, FB_LOAD,
+       FB_SOLO, FB_PREV, FB_NEXT, FB_BTN_N };
+#define MAP_ENC 6u                              /* KNOB1-4, ALGORITHM, PRESETS (SELECT : les morceaux) */
+#define MAP_BTN 12u                             /* OCT-, OCT+, FX, SEL, ENV, LFO, EDIT, GLO, HOME, SAVE, ARP, SEQ (PLAY, REC : fixes) */
+#define MAP_MAGIC 0x3150414Du                   /* "MAP1" */
+static const uint8_t MAP_ENC_ID[MAP_ENC] = {ENC_KNOB1, ENC_KNOB2, ENC_KNOB3, ENC_KNOB4, ENC_ALGORITHM, ENC_PRESETS};
+static const uint8_t MAP_BTN_ID[MAP_BTN] = {BTN_OCT_DOWN, BTN_OCT_UP, BTN_FX, BTN_SEL, BTN_ENV, BTN_LFO, BTN_EDIT, BTN_GLO,
+                                            BTN_HOME, BTN_SAVE, BTN_ARP, BTN_SEQ};
+static const uint8_t MAP_ENC_DEF[MAP_ENC] = {FN_TEMPO, FN_MOD, FN_GRAIN, FN_FILT, FN_TIME, FN_ECHO};
+static const uint8_t MAP_BTN_DEF[MAP_BTN] = {FB_PITCH_DN, FB_PITCH_UP, FB_LOOP, FB_SOLO, FB_SPIN, FB_BRAKE, FB_LOAD, FB_NONE,
+                                             FB_RESET, FB_SAVE, FB_ROLL_HALF, FB_ROLL_BEAT};
+static struct { uint32_t magic; uint8_t enc[MAP_ENC], btn[MAP_BTN]; uint8_t pad[2]; } cmap;
+static void map_load(void)
+{
+    uint32_t i, ok = !blob_load(1, &cmap, sizeof cmap) && cmap.magic == MAP_MAGIC;
+    for (i = 0; ok && i < MAP_ENC; i++) if (cmap.enc[i] >= FN_ENC_N) ok = 0;
+    for (i = 0; ok && i < MAP_BTN; i++) if (cmap.btn[i] >= FB_BTN_N) ok = 0;
+    if (ok) return;
+    cmap.magic = MAP_MAGIC;
+    for (i = 0; i < MAP_ENC; i++) cmap.enc[i] = MAP_ENC_DEF[i];
+    for (i = 0; i < MAP_BTN; i++) cmap.btn[i] = MAP_BTN_DEF[i];
+}
+
+
 /* ---- réception depuis la page (appelé par platform_poll) */
 static uint32_t rx_size, rx_got, rx_active, load_req;
 static volatile int32_t ack_cmd = -1, ack_seq = -1;
 static volatile uint32_t stat_req;              /* la page demande la place de la bibliothèque (SysEx 04) */
 static volatile uint32_t list_req, del_req, del_crc;   /* SysEx 05 : la liste ; 06 : retirer un morceau (par son CRC) */
+static volatile uint32_t map_req, map_get;      /* SysEx 07 : changer l'attribution ; 08 : la lire */
+static uint8_t map_new[18];
 
 static void app_sysex(const uint8_t *p, uint32_t n)
 {
@@ -297,6 +338,16 @@ static void app_sysex(const uint8_t *p, uint32_t n)
     if (p[3] == 4u) { stat_req = 1; return; }   /* place : CC 119 morceaux, CC 120 secteurs pris, CC 121 secteurs en tout */
     if (p[3] == 5u) { list_req = 1; return; }   /* liste : un SysEx 0x15 par morceau, puis 0x16 (la place) */
     if (p[3] == 6u && n >= 9u) { del_crc = rd35(p + 4); del_req = 1; return; }   /* retirer : CC 117 = 6, ou 0x46 */
+    if (p[3] == 7u && n >= 4u + MAP_ENC + MAP_BTN) {   /* attribution des molettes et boutons : CC 117 = 7, ou 0x47 */
+        uint32_t i, ok = 1;
+        for (i = 0; i < MAP_ENC; i++) if (p[4 + i] >= FN_ENC_N) ok = 0;
+        for (i = 0; i < MAP_BTN; i++) if (p[4 + MAP_ENC + i] >= FB_BTN_N) ok = 0;
+        if (!ok) { ack_cmd = 0x47; return; }
+        for (i = 0; i < MAP_ENC + MAP_BTN; i++) map_new[i] = p[4 + i];
+        map_req = 1;
+        return;
+    }
+    if (p[3] == 8u) { map_get = 1; return; }     /* l'attribution : SysEx 0x18 <6 molettes> <12 boutons> */
     if (p[3] == 1u && n >= 9u) {                /* début */
         uint32_t i = 9, t = 0, size = rd35(p + 4);
         if (!size || size > VGM_MAX) { ack_cmd = 0x41; return; }
@@ -312,7 +363,7 @@ static void app_sysex(const uint8_t *p, uint32_t n)
         i++; t = 0;
         while (i < n && p[i] && t < sizeof sys - 1u) sys[t++] = (char)p[i++];
         sys[t] = 0;
-        ack_cmd = 4;                            /* 4 : ce firmware lit le RSM2 (2 : RSM1 seulement ; 1 : un VGM brut) */
+        ack_cmd = 5;                            /* 5 : ce firmware lit le RSM3 (4 : RSM2 ; 2 : RSM1 seulement ; 1 : un VGM brut) */
     } else if (p[3] == 2u && n >= 6u) {         /* données */
         uint32_t seq = (uint32_t)p[4] | (uint32_t)p[5] << 7, off = seq * 512u, want, got;
         if (!rx_active || off >= rx_size) { ack_cmd = 0x42; return; }
@@ -534,11 +585,15 @@ static const char *msg;                         /* un message passager (Enregist
 static uint32_t msg_until;
 static void say(const char *m) { msg = m; msg_until = fm1_ms + 2500u; }
 
-/* ---- effets : les touches coupent les voix (SEL + touche : solo), les molettes règlent, FX tenu : boucle, HOME : tout
- * remettre. KNOB1 tempo, KNOB2 hauteur, KNOB3 filtre, KNOB4 écho, ALGORITHM temps de l'écho et de la boucle,
- * PRESETS grain. */
+/* ---- effets : les touches coupent les voix ; molettes et boutons : des fonctions au choix (la page les attribue,
+ * SysEx 07 ; enregistré dans le blob 1). Presets d'effets : blob 2. */
+#define NPRESET 12u                             /* les 12 premières touches */
+typedef struct { uint8_t used, echo, time, grain; int8_t filt, mod, pitch, pad; uint16_t tempo, pad2; uint32_t mute; } preset_t;
+static struct { uint32_t magic; preset_t p[NPRESET]; } presets;
+#define PRESET_MAGIC 0x31455250u                /* "PRE1" */
+
 static char fx_msg[40];
-static uint32_t fx_notes_prev, fx_leds = ~0u;
+static uint32_t fx_notes_prev, fx_leds, fx_glow, fx_blink;   /* (0 au départ : les LED sont éteintes) */
 static const char *voice_name(uint32_t k)
 {
     static const char *const YM[7] = {"FM 1", "FM 2", "FM 3", "FM 4", "FM 5", "FM 6", "DAC"};
@@ -554,96 +609,177 @@ static const char *voice_name(uint32_t k)
     return "?";
 }
 static char *put_i(char *p, int32_t v) { if (v > 0) *p++ = '+'; else if (v < 0) { *p++ = '-'; v = -v; } return put_u(p, (uint32_t)v); }
-static int32_t fx_turn(uint32_t enc, int32_t v, int32_t step, int32_t lo, int32_t hi, int *moved)
+static void fx_show(char *p) { *p = 0; say(fx_msg); }
+static uint32_t fx_any(void)
 {
-    int32_t e = fm1_enc_take(enc);
-    if (!e) return v;
-    v += e * step;
-    *moved = 1;
-    return v < lo ? lo : v > hi ? hi : v;
+    return tempo_cur != 256u || pitch || mute || fx.filt || fx.mod || fx.echo || fx.grain || fx.loop || fx.spin || brake || braked;
 }
-static uint32_t fx_any(void) { return tempo != 256u || pitch || mute || fx.filt || fx.echo || fx.grain || fx.stut; }
 static void fx_summary(char *s)                  /* la ligne du bas, quand un effet est en route */
 {
     char *p = s;
     uint32_t m = mute, n = 0;
-    if (tempo != 256u) { p = put_u(p, tempo * 100u / 256u); p = put_s(p, "% "); }
+    if (braked) p = put_s(p, "arret (PLAY) ");
+    if (tempo_cur != 256u) { p = put_u(p, tempo_cur * 100u / 256u); p = put_s(p, "% "); }
     if (pitch) { p = put_i(p, pitch); p = put_s(p, "dt "); }
     if (fx.filt) p = put_s(p, fx.filt < 0 ? "PB " : "PH ");
+    if (fx.mod) p = put_s(p, fx.mod < 0 ? "phaser " : "flanger ");
     if (fx.echo) p = put_s(p, "echo ");
     if (fx.grain) p = put_s(p, "grain ");
-    if (fx.stut) p = put_s(p, "boucle ");
+    if (fx.loop) p = put_s(p, "boucle ");
     while (m) { n += m & 1u; m >>= 1; }
     if (n) { p = put_u(p, n); p = put_s(p, n > 1u ? " muettes" : " muette"); }
     *p = 0;
 }
-static void fx_controls(uint32_t pressed)
+/* le tempo du morceau (RSM3) : un temps en trames du morceau ; 120 BPM si inconnu */
+static uint32_t beat_frames(void) { return 264600000u / (song.bpm100 ? song.bpm100 : 12000u); }
+static uint32_t tempo_eff(void) { uint32_t t = tempo_cur * (speed_q16 >> 8) >> 8; return t ? t : 1u; }   /* Q8 */
+
+static void fx_enc(uint32_t fn, int32_t e)      /* une molette a tourné de e crans */
 {
-    uint32_t y, pa, g, a, nv = voices(&y, &pa, &g, &a), notes = fm1_in.notes, hit = notes & ~fx_notes_prev, k, leds = 0;
-    int moved = 0;
-    char *p = fx_msg;
+    int32_t v;
+    char *p;
+    switch (fn) {
+    case FN_TEMPO:
+        v = (int32_t)tempo_cur + 13 * e; tempo_cur = (uint32_t)(v < 64 ? 64 : v > 512 ? 512 : v);
+        fx_show(put_s(put_u(put_s(fx_msg, "Tempo "), tempo_cur * 100u / 256u), " %")); break;
+    case FN_PITCH:
+        v = pitch + e; pitch = v < -12 ? -12 : v > (song.ym_clock ? 5 : 12) ? (song.ym_clock ? 5 : 12) : v; fx_apply_rate();
+        fx_show(put_s(put_i(put_s(fx_msg, "Hauteur "), pitch), " demi-tons")); break;
+    case FN_FILT:
+        v = fx.filt + e; v = v < -20 ? -20 : v > 20 ? 20 : v;
+        if (!fx.filt || (fx.filt < 0) != (v < 0)) { fx.lo[0] = fx.lo[1] = fx.bd[0] = fx.bd[1] = 0; }
+        fx.filt = (int8_t)v;
+        p = !v ? put_s(fx_msg, "Filtre eteint")
+               : put_s(put_u(put_s(fx_msg, v < 0 ? "Passe-bas " : "Passe-haut "), v < 0 ? FX_LP_HZ[-v] : FX_HP_HZ[v]), " Hz");
+        fx_show(p); break;
+    case FN_ECHO:
+        v = fx.echo + e; fx.echo = (uint8_t)(v < 0 ? 0 : v > 10 ? 10 : v);
+        p = !fx.buf ? put_s(fx_msg, "Echo : morceau trop gros") : !fx.echo ? put_s(fx_msg, "Echo eteint")
+            : put_s(put_u(put_s(fx_msg, "Echo : "), fx.echo), fx.echo > 1u ? " repetitions" : " repetition");
+        fx_show(p); break;
+    case FN_TIME:
+        v = fx.time + e; fx.time = (uint8_t)(v < 1 ? 1 : v > 11 ? 11 : v);
+        fx_show(put_s(put_u(put_s(fx_msg, "Temps echo, boucle "), (uint32_t)fx.time * 50u), " ms")); break;
+    case FN_GRAIN:
+        v = fx.grain + e; fx.grain = (uint8_t)(v < 0 ? 0 : v > 12 ? 12 : v);
+        fx_show(fx.grain ? put_u(put_s(fx_msg, "Grain "), fx.grain) : put_s(fx_msg, "Grain eteint")); break;
+    case FN_MOD:
+        v = fx.mod + e; fx.mod = (int8_t)(v < -10 ? -10 : v > 10 ? 10 : v);
+        fx_show(!fx.mod ? put_s(fx_msg, "Modulation eteinte")
+                : put_u(put_s(fx_msg, fx.mod < 0 ? "Phaser " : "Flanger "), (uint32_t)(fx.mod < 0 ? -fx.mod : fx.mod)));
+        break;
+    default: break;
+    }
+}
+static void preset_save(uint32_t k)
+{
+    preset_t *q = &presets.p[k];
+    q->used = 1; q->echo = fx.echo; q->time = fx.time; q->grain = fx.grain; q->filt = fx.filt; q->mod = fx.mod;
+    q->pitch = (int8_t)pitch; q->tempo = (uint16_t)tempo_cur; q->mute = mute;
+    presets.magic = PRESET_MAGIC;
+    if (blob_save(2, &presets, sizeof presets)) fx_show(put_s(fx_msg, "Preset pas enregistre (flash)"));
+    else fx_show(put_u(put_s(fx_msg, "Preset enregistre : touche "), k + 1u));
+}
+static void preset_init(void)
+{
+    if (blob_load(2, &presets, sizeof presets) || presets.magic != PRESET_MAGIC) { memset(&presets, 0, sizeof presets); presets.magic = PRESET_MAGIC; }
+}
+static void preset_load(uint32_t k)
+{
+    const preset_t *q = &presets.p[k];
+    if (!q->used) { fx_show(put_s(put_u(put_s(fx_msg, "Touche "), k + 1u), " : pas de preset")); return; }
+    fx.echo = q->echo; fx.time = q->time; fx.grain = q->grain;
+    if ((fx.filt < 0) != (q->filt < 0) || !fx.filt) { fx.lo[0] = fx.lo[1] = fx.bd[0] = fx.bd[1] = 0; }
+    fx.filt = q->filt; fx.mod = q->mod; tempo_cur = q->tempo; pitch = q->pitch; mute = q->mute;
+    if (song.ym_clock && pitch > 5) pitch = 5;
+    fx_apply_rate(); fx_apply_mute();
+    fx_show(put_u(put_s(fx_msg, "Preset "), k + 1u));
+}
+static void fx_resume(void) { braked = 0; brake = 0; speed_q16 = 65536u; fx_apply_rate(); }
+
+static void fx_controls(uint32_t pressed, uint32_t released)
+{
+    uint32_t y, pa, g, a, nv = voices(&y, &pa, &g, &a), notes = fm1_in.notes, hit = notes & ~fx_notes_prev, k, i;
+    uint32_t held = 0, leds = 0, glow = 0, mod_solo = 0, mod_save = 0, mod_load = 0;
+    char *p;
     fx_notes_prev = notes;
     if (nv > 27u) nv = 27u;
-    if (loaded) for (k = 0; k < nv; k++) {
-        uint32_t all = (1u << nv) - 1u;
+    for (i = 0; i < MAP_BTN; i++) if (fm1_in.buttons >> MAP_BTN_ID[i] & 1u) {
+        held |= 1u << i;
+        if (cmap.btn[i] == FB_SOLO) mod_solo = 1;
+        if (cmap.btn[i] == FB_SAVE) mod_save = 1;
+        if (cmap.btn[i] == FB_LOAD) mod_load = 1;
+    }
+    /* touches : preset (SAVE / rappel tenus), sinon voix (SEL tenu : solo) */
+    for (k = 0; k < 27u; k++) {
         if (!(hit >> k & 1u)) continue;
-        if (fm1_in.buttons >> BTN_SEL & 1u) {    /* solo, ou tout remettre si c'était déjà le solo de cette voix */
-            if ((mute & all) == (all & ~(1u << k))) { mute = 0; p = put_s(fx_msg, "Toutes les voix"); }
-            else { mute = all & ~(1u << k); p = put_s(put_s(fx_msg, "Solo "), voice_name(k)); }
-        } else {
-            mute ^= 1u << k;
-            p = put_s(put_s(fx_msg, voice_name(k)), mute >> k & 1u ? " coupee" : " remise");
+        if (mod_save || mod_load) {
+            if (k >= NPRESET) fx_show(put_s(fx_msg, "Presets : les 12 premieres touches"));
+            else if (mod_save) preset_save(k);
+            else preset_load(k);
+            continue;
         }
-        *p = 0; say(fx_msg);
-        fx_apply_mute();
-    }
-    {
-        int32_t t = fx_turn(ENC_KNOB1, (int32_t)tempo, 13, 64, 512, &moved);   /* ~5 % le cran */
-        if (moved) { tempo = (uint32_t)t; p = put_s(put_u(put_s(fx_msg, "Tempo "), tempo * 100u / 256u), " %"); *p = 0; say(fx_msg); moved = 0; }
-        t = fx_turn(ENC_KNOB2, pitch, 1, -12, song.ym_clock ? 5 : 12, &moved);
-        if (moved) { pitch = t; fx_apply_rate(); p = put_i(put_s(fx_msg, "Hauteur "), pitch); p = put_s(p, " demi-tons"); *p = 0; say(fx_msg); moved = 0; }
-        t = fx_turn(ENC_KNOB3, fx.filt, 1, -20, 20, &moved);
-        if (moved) {
-            if (!fx.filt || (fx.filt < 0) != (t < 0)) { fx.lo[0] = fx.lo[1] = fx.bd[0] = fx.bd[1] = 0; }
-            fx.filt = (int8_t)t;
-            if (!t) p = put_s(fx_msg, "Filtre eteint");
-            else p = put_s(put_u(put_s(fx_msg, t < 0 ? "Passe-bas " : "Passe-haut "), t < 0 ? FX_LP_HZ[-t] : FX_HP_HZ[t]), " Hz");
-            *p = 0; say(fx_msg); moved = 0;
-        }
-        t = fx_turn(ENC_KNOB4, fx.echo, 1, 0, 10, &moved);
-        if (moved) {
-            fx.echo = (uint8_t)t;
-            if (!fx.buf) p = put_s(fx_msg, "Echo : morceau trop gros");
-            else if (!t) p = put_s(fx_msg, "Echo eteint");
-            else p = put_s(put_u(put_s(fx_msg, "Echo "), (uint32_t)t), " / 10");
-            *p = 0; say(fx_msg); moved = 0;
-        }
-        t = fx_turn(ENC_ALGORITHM, fx.time, 1, 1, 11, &moved);
-        if (moved) { fx.time = (uint8_t)t; p = put_s(put_u(put_s(fx_msg, "Temps echo, boucle "), (uint32_t)t * 50u), " ms"); *p = 0; say(fx_msg); moved = 0; }
-        t = fx_turn(ENC_PRESETS, fx.grain, 1, 0, 12, &moved);
-        if (moved) { fx.grain = (uint8_t)t; if (t) p = put_u(put_s(fx_msg, "Grain "), (uint32_t)t); else p = put_s(fx_msg, "Grain eteint"); *p = 0; say(fx_msg); }
-    }
-    if (pressed & (1u << BTN_HOME)) {
-        tempo = 256; pitch = 0; mute = 0;
-        fx_reset(&fx);
-        fx_apply_rate(); fx_apply_mute();
-        say("Effets remis a zero");
-    }
-    {
-        static uint32_t was;
-        uint32_t held = fm1_in.buttons >> BTN_FX & 1u;
-        if (held != was) {
-            was = held;
-            fx_stutter(&fx, held && loaded);
-            if (held && loaded && !fx.buf) say("Boucle : morceau trop gros");
+        if (!loaded || k >= nv) continue;
+        {
+            uint32_t all = (1u << nv) - 1u;
+            if (mod_solo) {
+                if ((mute & all) == (all & ~(1u << k))) { mute = 0; p = put_s(fx_msg, "Toutes les voix"); }
+                else { mute = all & ~(1u << k); p = put_s(put_s(fx_msg, "Solo "), voice_name(k)); }
+            } else {
+                mute ^= 1u << k;
+                p = put_s(put_s(fx_msg, voice_name(k)), mute >> k & 1u ? " coupee" : " remise");
+            }
+            fx_show(p);
+            fx_apply_mute();
         }
     }
-    if (loaded) for (k = 0; k < nv; k++) if (!(mute >> k & 1u)) leds |= 1u << k;   /* une touche allumée : une voix qui joue */
-    if (leds != fx_leds) {
-        for (k = 0; k < 27u; k++) if ((leds ^ fx_leds) >> k & 1u) fm1_led_key(KEY_LED(k), (int)(leds >> k & 1u));
-        fx_leds = leds;
+    for (i = 0; i < MAP_ENC; i++) { int32_t e = fm1_enc_take(MAP_ENC_ID[i]); if (e) fx_enc(cmap.enc[i], e); }
+    for (i = 0; i < MAP_BTN; i++) {
+        uint32_t fn = cmap.btn[i], down = pressed >> MAP_BTN_ID[i] & 1u, up = released >> MAP_BTN_ID[i] & 1u;
+        if (!down && !up) continue;
+        switch (fn) {
+        case FB_PITCH_DN: case FB_PITCH_UP: if (down) fx_enc(FN_PITCH, fn == FB_PITCH_UP ? 1 : -1); break;
+        case FB_LOOP:
+            if (down && loaded) { if (!fx.buf) say("Boucle : morceau trop gros"); fx_loop(&fx, fx_len(&fx), 0, 0); }
+            if (up) fx.loop = 0;
+            break;
+        case FB_ROLL_HALF: case FB_ROLL_BEAT:
+            if (down && loaded) {               /* le bout commence sur le dernier demi-temps (ou temps) */
+                uint32_t L = beat_frames() >> (fn == FB_ROLL_HALF ? 1 : 0), ph = song.beat0 % L, t = played, back, te = tempo_eff();
+                back = t >= ph ? (t - ph) % L : 0u;
+                if (!fx.buf) say("Beat roll : morceau trop gros");
+                fx_loop(&fx, L * 256u / te, back * 256u / te, 1);   /* (L < 2^23 : pas de débordement) */
+                fx_show(put_s(put_u(put_s(fx_msg, "Beat roll "), song.bpm100 ? song.bpm100 / 100u : 120u),
+                              fn == FB_ROLL_HALF ? " BPM, 1/2 temps" : " BPM, 1 temps"));
+            }
+            if (up) fx.loop = 0;
+            break;
+        case FB_BRAKE:
+            if (down && loaded) {
+                if (braked) { fx_resume(); playing = 1; say("Platine relancee"); }
+                else if (playing) { brake = 1; say("Vinyl brake"); }
+            }
+            break;
+        case FB_SPIN: if (down && loaded) { if (!fx.buf) say("Backspin : morceau trop gros"); else { fx_backspin(&fx); say("Backspin"); } } break;
+        case FB_RESET:
+            if (down) { tempo_cur = 256; pitch = 0; mute = 0; fx_reset(&fx); fx_resume(); fx_apply_mute(); say("Effets remis a zero"); }
+            break;
+        case FB_SAVE: if (down && !notes) say("SAVE + touche 1-12 : enregistrer"); break;
+        case FB_LOAD: if (down && !notes) say("Tenir + touche 1-12 : rappeler"); break;
+        case FB_PREV: case FB_NEXT: if (down) track_turn += fn == FB_NEXT ? 1 : -1, track_turn_t = fm1_ms | 1u; break;
+        default: break;
+        }
     }
-    fm1_led_key(BTN_FX, fx.stut);
+    /* touches allumées : une voix qui joue ; une voix coupée : faible lueur et un clin d'oeil par seconde */
+    fx_blink = (fm1_ms % 1000u) < 120u;
+    if (loaded) for (k = 0; k < nv; k++) { if (!(mute >> k & 1u)) leds |= 1u << k; else { glow |= 1u << k; if (fx_blink) leds |= 1u << k; } }
+    if (leds != fx_leds) { for (k = 0; k < 27u; k++) if ((leds ^ fx_leds) >> k & 1u) fm1_led_key(KEY_LED(k), (int)(leds >> k & 1u)); fx_leds = leds; }
+    if (glow != fx_glow) { for (k = 0; k < 27u; k++) if ((glow ^ fx_glow) >> k & 1u) fm1_led_key_glow(KEY_LED(k), (int)(glow >> k & 1u)); fx_glow = glow; }
+    for (i = 0; i < MAP_BTN; i++) {             /* un bouton allumé : son effet est en route */
+        uint32_t fn = cmap.btn[i], on = (fn == FB_LOOP || fn == FB_ROLL_HALF || fn == FB_ROLL_BEAT) ? fx.loop && (held >> i & 1u)
+                    : fn == FB_BRAKE ? brake || braked : fn == FB_SPIN ? fx.spin != 0u : 0u;
+        if (fn == FB_LOOP || fn == FB_ROLL_HALF || fn == FB_ROLL_BEAT || fn == FB_BRAKE || fn == FB_SPIN) fm1_led_key(MAP_BTN_ID[i], (int)on);
+    }
 }
 
 static void draw_song(void)                     /* système, titre, jeu, place dans la bibliothèque */
@@ -819,10 +955,10 @@ static void rs_host_sx(void)
 static void app_main(void)
 {
     uint32_t b, rel, t_shown = 0, sum = 0, cnt = 0, pct = 0, shown_rx = ~0u, rec_t = 0, rec_done = 0;
-    int32_t turn = 0;
-    uint32_t turn_t = 0;
 
     fx_reset(&fx);
+    map_load();
+    preset_init();
     lcd_fill(0, 0, 240, 240, C_BLACK);
     draw_text_box(0, 18, 240, &FONT_L, APP_NAME, C_ACC, 1);
     lib_load();
@@ -865,6 +1001,25 @@ static void app_main(void)
             t_shown = 0;
         }
         if (list_req && ack_cmd < 0) { list_req = 0; lib_send_list(); }
+        if (map_req) {                          /* la page attribue les molettes et boutons */
+            uint32_t i;
+            map_req = 0;
+            for (i = 0; i < MAP_ENC; i++) cmap.enc[i] = map_new[i];
+            for (i = 0; i < MAP_BTN; i++) cmap.btn[i] = map_new[MAP_ENC + i];
+            cmap.magic = MAP_MAGIC;
+            ack_cmd = blob_save(1, &cmap, sizeof cmap) ? 0x48 : 7;
+            say("Commandes changees depuis la page");
+        }
+        if (map_get && ack_cmd < 0) {
+            static uint8_t f[6 + MAP_ENC + MAP_BTN];
+            uint32_t i;
+            map_get = 0;
+            f[0] = 0xF0; f[1] = 0x7D; f[2] = 0x52; f[3] = 0x53; f[4] = 0x18;
+            for (i = 0; i < MAP_ENC; i++) f[5 + i] = cmap.enc[i];
+            for (i = 0; i < MAP_BTN; i++) f[5 + MAP_ENC + i] = cmap.btn[i];
+            f[5 + MAP_ENC + MAP_BTN] = 0xF7;
+            rs_sysex_send(f, sizeof f);
+        }
         if (stat_req && ack_cmd < 0) {          /* après l'accusé de fin : la page lit la place juste après */
             uint32_t ok = lib_ok() ? 1u : 0u;
             stat_req = 0;
@@ -882,9 +1037,10 @@ static void app_main(void)
         }
 
         b = fm1_input_edges(&rel);
-        fx_controls(b);
+        fx_controls(b, rel);
         if (b & (1u << BTN_PLAY) && loaded) {
             if (ended) song_start();
+            else if (braked) { fx_resume(); playing = 1; }
             else playing = !playing;
             t_shown = 0;
         }
@@ -899,17 +1055,17 @@ static void app_main(void)
         if (rel & (1u << BTN_REC) && !rec_done && loaded) { uint32_t was = playing; song_start(); playing = was; t_shown = 0; }
         /* morceau suivant / précédent : OCT+ / OCT-, ou SELECT (on charge quand on a fini de tourner) */
         {
-            int32_t e = fm1_enc_take(ENC_SELECT) + (b >> BTN_OCT_UP & 1u) - (b >> BTN_OCT_DOWN & 1u);
-            if (e) { turn += e; turn_t = fm1_ms | 1u; }
+            int32_t e = fm1_enc_take(ENC_SELECT);
+            if (e) { track_turn += e; track_turn_t = fm1_ms | 1u; }
         }
-        if (turn && lib.count > 1u) {
-            if (fm1_ms - turn_t >= 400u) {          /* 0,4 s après le dernier cran */
-                int32_t n = (int32_t)lib.count, i = ((int32_t)lib.cur + turn % n + n) % n;
-                turn = 0; turn_t = 0;
+        if (track_turn && lib.count > 1u) {
+            if (fm1_ms - track_turn_t >= 400u) {    /* 0,4 s après le dernier cran */
+                int32_t n = (int32_t)lib.count, i = ((int32_t)lib.cur + track_turn % n + n) % n;
+                track_turn = 0; track_turn_t = 0;
                 open_lib((uint32_t)i, 1);
                 t_shown = 0;
             }
-        } else if (turn) turn = 0;
+        } else if (track_turn) track_turn = 0;
         fm1_led_key(BTN_PLAY, playing);
 
         if (rx_active) {                         /* réception : la progression, 4 fois par seconde */

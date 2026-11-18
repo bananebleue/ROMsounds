@@ -1,9 +1,9 @@
 # ROMsounds, bibliothèque à tasser : ROMSOUNDS_RSM=A,B,C,D (100, 40, 101, 80 Ko ; tests/big_rsm.js) ROMSOUNDS_EVERY=5000
-# B retiré (OCT- puis REC maintenu) : un trou de 40 Ko ; D (80 Ko) ne tient qu'une fois C descendu contre A
-11500 btn 0
+# B retiré (SELECT un cran à gauche puis REC maintenu) : un trou de 40 Ko ; D (80 Ko) ne tient qu'une fois C descendu contre A
+11500 enc 0 -1
 12000 btndown 13
 14600 btnup 13
 15500 shot
-16000 btn 0
+16000 enc 0 -1
 18800 shot
 19000 end

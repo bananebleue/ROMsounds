@@ -1,0 +1,12 @@
+# ROMsounds, presets : passe-bas, SAVE (9) + touche 1 : enregistré ; HOME (8) ; EDIT (6) + touche 1 : rappelé, sur build/gb.rsm
+0 enc 5 -20
+100 btndown 9
+150 keys 1
+200 keys 0
+250 btnup 9
+300 btn 8
+700 btndown 6
+750 keys 1
+800 keys 0
+850 btnup 6
+1000 end

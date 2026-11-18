@@ -1,3 +1,3 @@
-# ROMsounds, effets : passe-bas 150 Hz (KNOB3 = encodeur 4, -20), sur build/gb.rsm
-0 enc 4 -20
+# ROMsounds, effets : passe-bas 150 Hz (KNOB4 = encodeur 5, -20), sur build/gb.rsm
+0 enc 5 -20
 1000 end
