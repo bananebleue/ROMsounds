@@ -4,32 +4,51 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ROMsounds · le lecteur de musiques de jeux du FM-1</title>
-<meta name="theme-color" content="#0f1340">
+<meta name="theme-color" content="#14161a">
+<script>
+  /* le thème choisi (avant l'affichage : pas d'éclair de l'ancien) */
+  try { const t = localStorage.getItem('romsounds-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) { /* (stockage indisponible) */ }
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
 <style>
-  /* « Sound test » : l'écran caché des jeux 16 bits où l'on écoutait les musiques. Fenêtres bleues à double cadre,
-   * curseur jaune, une seule fantaisie : le FM-1 dessiné, qui sert aussi à attribuer les commandes. */
+  /* Thèmes (menu « Thème », gardé dans le navigateur) : seules les couleurs changent. Par défaut : graphite et orange. */
   :root {
-    --night:#0f1340; --win:#1a2166; --win2:#222b80; --frame:#8ea3ff; --shade:#05072a;
-    --ink:#f4f1e8; --dim:#a9b3e3; --gold:#ffd447; --hot:#ff5d73; --mint:#5ef2c2;
     --plastic:#d9d5cc; --plastic2:#bdb8ad; --slot:#2b2d33;
     --px:'Pixelify Sans', ui-monospace, monospace;
+  }
+  :root, html[data-theme="graphite"] {
+    --night:#14161a; --win:#1e2127; --win2:#23272e; --frame:#3a3f49; --shade:#0b0c0f; --ink:#e9e6df; --dim:#9aa0aa; --gold:#ffa500; --gold2:#d98c00; --glow:#22262e; --logo2:#7a4a00; --rule:#2e323a; --mint:#6fcf8f; --hot:#ff6b57;
+  }
+  html[data-theme="ambre"] {
+    --night:#120d08; --win:#1c150d; --win2:#231a10; --frame:#6b4a1c; --shade:#070502; --ink:#ffd9a0; --dim:#b8915e; --gold:#ffb000; --gold2:#d68f00; --glow:#2b1c08; --logo2:#6b3d00; --rule:#3a2a14; --mint:#9be36b; --hot:#ff6a3d;
+  }
+  html[data-theme="megadrive"] {
+    --night:#0c0c0e; --win:#18181c; --win2:#1e1e23; --frame:#d7262e; --shade:#000000; --ink:#f2f2f2; --dim:#a3a3ad; --gold:#ffcc00; --gold2:#d9ad00; --glow:#2a0d10; --logo2:#b3141c; --rule:#34343c; --mint:#4fd1ff; --hot:#ff4d4d;
+  }
+  html[data-theme="gameboy"] {
+    --night:#0f1f0f; --win:#173017; --win2:#1d3a1d; --frame:#8bac0f; --shade:#081208; --ink:#e0f8cf; --dim:#9bbc8a; --gold:#c4e34a; --gold2:#9bbc0f; --glow:#1f3d1a; --logo2:#306230; --rule:#2e4f22; --mint:#c4e34a; --hot:#ff8a5b;
+  }
+  html[data-theme="neogeo"] {
+    --night:#07080b; --win:#11141c; --win2:#161a24; --frame:#c9a03a; --shade:#000000; --ink:#f5f1e3; --dim:#a9a38d; --gold:#ffd34d; --gold2:#c99a1c; --glow:#14245e; --logo2:#1f3fbf; --rule:#2b2f3b; --mint:#4fd8ff; --hot:#ff3b3b;
+  }
+  html[data-theme="soundtest"] {
+    --night:#0f1340; --win:#1a2166; --win2:#222b80; --frame:#8ea3ff; --shade:#05072a; --ink:#f4f1e8; --dim:#a9b3e3; --gold:#ffd447; --gold2:#e9b92c; --glow:#23308f; --logo2:#3a2a9a; --rule:#3a46b8; --mint:#5ef2c2; --hot:#ff5d73;
   }
   * { box-sizing:border-box; }
   html { background:var(--night); }
   body { margin:0; color:var(--ink); font:17px/1.5 var(--px);
          background:
            linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px) 0 0 / 100% 3px,
-           radial-gradient(1200px 600px at 70% -10%, #23308f 0%, transparent 60%), var(--night); min-height:100vh; }
+           radial-gradient(1200px 600px at 70% -10%, var(--glow) 0%, transparent 60%), var(--night); min-height:100vh; }
   a { color:var(--gold); }
   :focus-visible { outline:3px solid var(--gold); outline-offset:2px; }
   [hidden] { display:none !important; }
 
   header.top { display:flex; align-items:center; gap:18px; flex-wrap:wrap; padding:18px clamp(14px, 3vw, 40px) 8px; }
   .logo { font:700 clamp(30px, 4.4vw, 54px)/1 'Silkscreen', var(--px); margin:0; letter-spacing:.02em; color:var(--ink);
-          text-shadow:3px 3px 0 var(--shade), 6px 6px 0 #3a2a9a; }
+          text-shadow:3px 3px 0 var(--shade), 6px 6px 0 var(--logo2); }
   .tagline { color:var(--dim); margin:0; flex:1 1 260px; }
   .status { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .state { display:inline-flex; align-items:center; gap:8px; }
@@ -60,10 +79,10 @@
   input[type=file]::file-selector-button { font:600 1rem var(--px); background:var(--win2); color:var(--ink); border:0; padding:8px 12px;
            box-shadow:inset 0 0 0 2px var(--frame); margin-right:10px; cursor:pointer; }
   pre { white-space:pre-wrap; background:var(--shade); padding:12px; margin:12px 0 0; min-height:3em; font:15px/1.45 var(--px); color:var(--ink);
-        box-shadow:inset 0 0 0 2px #2a3490; }
+        box-shadow:inset 0 0 0 2px var(--rule); }
   progress { width:100%; height:14px; margin-top:10px; appearance:none; border:0; background:var(--shade); box-shadow:inset 0 0 0 2px var(--frame); }
   progress::-webkit-progress-bar { background:var(--shade); }
-  progress::-webkit-progress-value { background:repeating-linear-gradient(90deg, var(--gold) 0 10px, #e9b92c 10px 12px); }
+  progress::-webkit-progress-value { background:repeating-linear-gradient(90deg, var(--gold) 0 10px, var(--gold2) 10px 12px); }
   progress::-moz-progress-bar { background:var(--gold); }
   .hint { color:var(--gold); margin:10px 0 0; }
   details > summary { cursor:pointer; color:var(--ink); list-style:none; }
@@ -73,7 +92,7 @@
   label.ok input { margin-top:5px; accent-color:var(--gold); }
   .lib { margin-top:14px; }
   .lib label.ok { padding:3px 0; color:var(--ink); }
-  .fw { border-top:2px dashed #3a46b8; padding:12px 0; }
+  .fw { border-top:2px dashed var(--rule); padding:12px 0; }
   .fw:first-of-type { border-top:0; padding-top:0; }
   .fw b { display:block; } .fw small { color:var(--dim); display:block; word-break:break-word; }
   .tag { font-size:.8rem; color:var(--gold); box-shadow:inset 0 0 0 2px var(--gold); padding:1px 7px; margin-left:6px; font-weight:400; }
@@ -130,6 +149,9 @@
   <div class="status">
     <span class="state"><span class="dot" id="dot"></span><span id="state">Non détecté</span></span>
     <button class="ghost" id="detect">Détecter le FM-1</button>
+    <label class="state" for="theme">Thème
+      <select id="theme"><option value="graphite">Graphite et orange</option><option value="ambre">Ambre, écran phosphore</option><option value="megadrive">Mega Drive</option><option value="gameboy">Game Boy</option><option value="neogeo">Neo-Geo</option><option value="soundtest">Sound test (bleu)</option></select>
+    </label>
   </div>
 </header>
 
@@ -851,6 +873,18 @@ $('mapSend').addEventListener('click', async () => {
   finally { if (aw) aw.stop(); if (dev) dev.link.close(); busy = false; ready(); }
 });
 drawFm1();
+
+/* ---------- thème ---------- */
+const THEME_BG = { graphite: '#14161a', ambre: '#120d08', megadrive: '#0c0c0e', gameboy: '#0f1f0f', neogeo: '#07080b', soundtest: '#0f1340' };
+function setTheme(t) {
+  if (!THEME_BG[t]) t = 'graphite';
+  document.documentElement.dataset.theme = t;
+  $('theme').value = t;
+  document.querySelector('meta[name=theme-color]').content = THEME_BG[t];
+  try { localStorage.setItem('romsounds-theme', t); } catch (e) { /* (stockage indisponible : le choix vaut pour cette visite) */ }
+}
+setTheme(document.documentElement.dataset.theme || 'graphite');
+$('theme').addEventListener('change', () => setTheme($('theme').value));
 
 // Détection automatique si l'accès MIDI (SysEx) est déjà autorisé
 (async () => {
