@@ -114,6 +114,15 @@ jobs:
           node ../tests/wav_check.js build/host/romsounds.wav 1-19:3000
           node ../tests/preview_test.js build/scout.rsm 20 build/pv_scout.wav
           node ../tests/wav_compare.js build/pv_scout.wav build/host/romsounds.wav 4 20 1
+          # PC (AdLib) : OPL2 (YM3812, fmopl.c de MAME), tables à jour ; sinus à 440 Hz, FM, percussions, accord en boucle,
+          # joué sur PC et dans la page (même son)
+          cc -O2 -w -o build/gen_fmopl_tables tools/gen_fmopl_tables.c -lm
+          build/gen_fmopl_tables | cmp - firmware/ext/fmopl/fmopl_tables.h
+          build/make_test_vgm build/opl.vgm opl > /dev/null && node ../tests/rx_test.js build/opl.vgm build/x.syx build/opl.rsm
+          ROMSOUNDS_RSM=build/opl.rsm sh tests/run_host.sh build/f6.txt > /dev/null
+          node ../tests/wav_check.js build/host/romsounds.wav 0.2-0.9:~440 1.1-1.9:1000 2.1-2.9:1000 3.1-4.9:1000 5.2-5.9:1000
+          node ../tests/preview_test.js build/opl.rsm 6 build/pv_opl.wav
+          node ../tests/wav_compare.js build/pv_opl.wav build/host/romsounds.wav 1 6 1
           # Amiga : un module de test (tests/make_test_mod.js) préparé par la page, joué sur PC (hauteurs, coupures, glissando,
           # retour au début) et dans la page (même son)
           node ../tests/make_test_mod.js build/test.mod
@@ -143,7 +152,7 @@ jobs:
           # attribution par la page (SysEx 07, relue par 08) : le filtre sur KNOB1
           M="03 00 00 00 00 00 01 02 03 0B 07 06 0A 00 08 09 04 05"
           ROMSOUNDS_SX="0:7D 52 53 07 $M;100:7D 52 53 08" ROMSOUNDS_RSM=build/gb.rsm sh tests/run_host.sh tests/scripts/fx_map.txt > build/map.log
-          grep -q "BF 117 7" build/map.log && grep -q "SYSEX out F0 7D 52 53 18 $M F7" build/map.log
+          grep -q "BF 117 8" build/map.log && grep -q "SYSEX out F0 7D 52 53 18 $M F7" build/map.log
           node ../tests/wav_check.js build/host/romsounds.wav 0.4-0.9:1/2000
 
       - name: Chaîne JieLi (pkgman.jieliapp.com)

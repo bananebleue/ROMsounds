@@ -8,6 +8,7 @@
  *   gg : un morceau Game Gear (SN76489 seul, stéréo), 4 s, sans boucle
  *   gb : un morceau Game Boy (4 voies, enveloppe, balayage, longueur, panoramique), 6 s, boucle sur les 2 dernières
  *   ay : un morceau YM2149 (Atari ST, 2 MHz) : voie A, voie B en enveloppe, bruit sur C, puis les trois (boucle), 5 s
+ *   opl : un morceau OPL2 / AdLib (YM3812, 3,58 MHz) : sinus 440 Hz, FM 880 Hz, percussions, puis un accord (boucle), 5 s
  *   nes : un morceau NES (2 carrées dont une qui balaye, triangle, bruit, DPCM), 6 s, boucle sur les 2 dernières
  * Déroulé (secondes) : 0-2 accord FM, 2-3 PSG seul (3 voies), 3-4 bruit, 4-5 DAC (une rampe), puis boucle sur le PSG. */
 #include <stdio.h>
@@ -94,6 +95,39 @@ static int ym2149(const char *path)
     return finish(path, "YM2149", loop_at, 88200);
 }
 
+static void oplw(uint32_t reg, uint32_t val) { b(0x5A); b(reg); b(val); }
+static void opl_voice(uint32_t ch, uint32_t mod_tl, uint32_t fnum, uint32_t blk)
+{
+    static const uint8_t OFS[9] = {0, 1, 2, 8, 9, 10, 16, 17, 18};
+    uint32_t m = OFS[ch], c = OFS[ch] + 3u;
+    oplw(0x20 + m, 0x01); oplw(0x20 + c, 0x01);           /* multiplicateur 1 */
+    oplw(0x40 + m, mod_tl); oplw(0x40 + c, 0x00);
+    oplw(0x60 + m, 0xF2); oplw(0x60 + c, 0xF2);           /* attaque rapide */
+    oplw(0x80 + m, 0x05); oplw(0x80 + c, 0x05);
+    oplw(0xC0 + ch, 0x00);                                /* FM, sans réinjection */
+    oplw(0xA0 + ch, fnum & 255); oplw(0xB0 + ch, 0x20 | blk << 2 | fnum >> 8);
+}
+static int opl2(const char *path)
+{
+    uint32_t loop_at;
+    n = 0x80; w32(0x08, 0x151); w32(0x34, 0x80 - 0x34); w32(0x50, 3579545);
+    oplw(0x01, 0x20);                                     /* formes d'onde permises */
+    opl_voice(0, 0x3F, 580, 4); wait(44100);              /* sinus : 440 Hz (modulateur muet) */
+    oplw(0xB0, 0x00);
+    opl_voice(1, 0x18, 580, 5); wait(44100);              /* FM : 880 Hz */
+    oplw(0xB1, 0x00);
+    opl_voice(6, 0x10, 400, 2); oplw(0xB6, 2 << 2 | 400 >> 8);   /* percussions : voies 6-8 réglées, sans « key on » */
+    opl_voice(7, 0x00, 700, 3); oplw(0xB7, 3 << 2 | 700 >> 8);
+    opl_voice(8, 0x00, 900, 3); oplw(0xB8, 3 << 2 | 900 >> 8);
+    oplw(0xBD, 0x20); oplw(0xBD, 0x39); wait(22050); oplw(0xBD, 0x20); oplw(0xBD, 0x39); wait(22050);   /* grosse caisse, caisse claire, charleston */
+    oplw(0xBD, 0x00);
+    loop_at = n;
+    opl_voice(2, 0x3F, 580, 4); opl_voice(3, 0x3F, 731, 4); opl_voice(4, 0x3F, 869, 4);   /* la, do#, mi */
+    wait(88200);
+    oplw(0xB2, 0); oplw(0xB3, 0); oplw(0xB4, 0);
+    return finish(path, "OPL2", loop_at, 88200);
+}
+
 static int nes(const char *path)
 {
     uint32_t i, at, loop_at;
@@ -135,6 +169,7 @@ int main(int argc, char **argv)
     if (argc > 2 && !strcmp(argv[2], "gb")) return game_boy(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "nes")) return nes(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "ay")) return ym2149(argv[1]);
+    if (argc > 2 && !strcmp(argv[2], "opl")) return opl2(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "gg")) {              /* gg : Game Gear (SN76489 seul, stéréo 0x4F), 4 s */
         w32(0x08, 0x151); w32(0x0C, 3579545); w32(0x34, 0x40 - 0x34);
         buf[0x28] = 0x09; buf[0x29] = 0x00; buf[0x2A] = 16;   /* bruit Sega */

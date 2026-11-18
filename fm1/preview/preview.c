@@ -2,18 +2,19 @@
 /* ROMsounds : le lecteur du FM-1, pour la page (WebAssembly). Mêmes puces, même lecture des commandes, mêmes niveaux
  * que firmware/src/romsounds.c (render_block, sans les effets) : ce qu'on écoute dans la page est ce que jouera le FM-1.
  *
- *   pv_buf()           l'endroit où la page copie le morceau préparé (RSM1 à RSM4, web/romsounds.js)
+ *   pv_buf()           l'endroit où la page copie le morceau préparé (RSM1 à RSM5, RSMD : web/romsounds.js)
  *   pv_load(taille)    0, ou un code d'erreur (comme song_load)
  *   pv_render(n)       calcule n trames (n <= PV_BLOCK) dans pv_out() (int16 stéréo, 44,1 kHz) ; rend le nombre de
  *                      trames calculées (moins que n : fin du morceau)
  *   pv_played()        trames jouées (le temps du morceau, la boucle continue après la fin)
- *   pv_mute(masque)    voix coupées (même ordre que sur le FM-1 : FM 1-6, DAC, PSG 1-3, bruit ; Game Boy ; NES ; AY)
+ *   pv_mute(masque)    voix coupées (même ordre que sur le FM-1 : FM 1-6, DAC, PSG 1-3, bruit ; Game Boy ; NES ; OPL ; AY)
  *
  *   tools/build_preview.sh  ->  web/preview.wasm  (clang --target=wasm32, sans bibliothèque C) */
 #include <stdint.h>
 #include <string.h>
 #include "../firmware/ext/fmopn/fmopn_shim.h"
 #include "../firmware/ext/fmopn/fmopn.h"
+#include "../firmware/ext/fmopl/fmopl.h"
 #include "psg.h"
 #include "gb_apu.h"
 #include "nes_apu.h"
@@ -67,6 +68,13 @@ static void vgm_psg_stereo(uint32_t val) { psg_stereo(&psg, val); }
 static void vgm_gb(uint32_t reg, uint32_t val) { gb_write(&gb, reg, val); }
 static void vgm_nes(uint32_t reg, uint32_t val) { nes_write(&nes, reg, val); }
 static void vgm_ay(uint32_t reg, uint32_t val) { ay_write(&ay, reg, val); }
+static void *opl;
+static void vgm_opl(uint32_t reg, uint32_t val)
+{
+    if (!opl) return;
+    if (song.opl_type == 2u) { ym3526_write(opl, 0, (UINT8)reg); ym3526_write(opl, 1, (UINT8)val); }
+    else { ym3812_write(opl, 0, (UINT8)reg); ym3812_write(opl, 1, (UINT8)val); }
+}
 
 static void part_open(uint32_t which)
 {
@@ -117,6 +125,11 @@ static void apply_mute(void)
     psg.mute = (uint8_t)(song.psg_clock ? mute >> n & 15u : 0u); if (song.psg_clock) n += 4u;
     gb.mute = (uint8_t)(song.gb_clock ? mute >> n & 15u : 0u); if (song.gb_clock) n += 4u;
     nes.mute = (uint8_t)(song.nes_clock ? mute >> n & 31u : 0u); if (song.nes_clock) n += 5u;
+    if (song.opl_clock) {
+        uint32_t mm = mute >> n;
+        if (opl) opl_set_mute_mask(opl, (mm & 0x1FFu) | (mm >> 9 & 1u ? 0x3E00u : 0u));
+        n += 10u;
+    }
     ay.mute = (uint8_t)(song.ay_clock ? mute >> n & 15u : 0u);
     mod.mute = song.is_mod ? mute & 0xFFu : 0u;
 }
@@ -135,8 +148,8 @@ EXPORT("pv_load") int pv_load(uint32_t size)
         apply_mute();
         return 0;
     }
-    if (size < 40u || size > VGM_MAX || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] < '1' || m[3] > '4')) return 4;
-    hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : m[3] == '3' ? 56u : 64u;
+    if (size < 40u || size > VGM_MAX || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] < '1' || m[3] > '5')) return 4;
+    hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : m[3] == '3' ? 56u : m[3] == '4' ? 64u : 72u;
     if (size < hl) return 4;
     pcm = rd32(m + 20); a = rd32(m + 24); b = rd32(m + 28);
     if (hl + pcm + a + b != size || !a) return 4;
@@ -147,15 +160,24 @@ EXPORT("pv_load") int pv_load(uint32_t size)
     song.nes_clock = hl > 40u ? rd32(m + 44) : 0u;
     song.ay_clock = hl > 56u ? rd32(m + 56) : 0u;
     song.ay_type = hl > 56u ? rd32(m + 60) : 0u;
+    song.opl_clock = hl > 64u ? rd32(m + 64) : 0u;
+    song.opl_type = hl > 64u ? rd32(m + 68) : 0u;
     song.pcm = m + hl; song.pcm_len = pcm;
     part_a = m + hl + pcm; len_a = a;
     part_b = part_a + a; len_b = b;
-    if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock && !song.ay_clock) return 3;
+    if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock && !song.ay_clock && !song.opl_clock) return 3;
     yc = song.ym_clock ? song.ym_clock : 7670453u;
     if (yc > 9000000u) yc = 9000000u;
     rate = yc / 144u;
     ym = ym2612_init(NULL, yc, rate, NULL, NULL);
     ym2612_reset_chip(ym);
+    opl = 0;
+    if (song.opl_clock && !song.ym_clock) {     /* comme song_start (firmware/src/romsounds.c) */
+        uint32_t oc = song.opl_clock > 4000000u ? 4000000u : song.opl_clock;
+        rate = oc / 72u;
+        if (song.opl_type == 2u) { opl = ym3526_init(oc, rate); if (opl) ym3526_reset_chip(opl); }
+        else { opl = ym3812_init(oc, rate); if (opl) ym3812_reset_chip(opl); }
+    }
     psg_init(&psg, song.psg_clock ? song.psg_clock : 3579545u, song.psg_cfg & 0xFFFFu, song.psg_cfg >> 16 & 0xFFu);
     gb_init(&gb, song.gb_clock);
     nes_init(&nes, song.nes_clock, !song.ym_clock && song.pcm_len >= 0x8000u ? song.pcm : 0);
@@ -184,14 +206,19 @@ EXPORT("pv_render") uint32_t pv_render(uint32_t frames)
         n = wait < left ? wait : left;
         if (n > 256u) n = 256u;                 /* (mbuf : 256 trames au plus d'un coup, comme sur le FM-1) */
         for (j = 0; j < n; j++) { p += ym_step; k += p >> 16; p &= 0xFFFFu; }
-        if (song.ym_clock) {
+        if (song.ym_clock || opl) {
+            int32_t g = song.ym_clock ? 2 : OPL_GAIN;
             mbuf_l[0] = mbuf_l[mbuf_n]; mbuf_r[0] = mbuf_r[mbuf_n];
-            if (k) ym2612_update_one(ym, k, bb);
+            if (k) {
+                if (song.ym_clock) ym2612_update_one(ym, k, bb);
+                else if (song.opl_type == 2u) ym3526_update_one(opl, k, bb);
+                else ym3812_update_one(opl, k, bb);
+            }
             mbuf_n = k;
             for (j = 0; j < n; j++) {
                 ym_pos += ym_step; kk += ym_pos >> 16; ym_pos &= 0xFFFFu;
-                mix[2u * (o + j)] += mbuf_l[kk] << 1;
-                mix[2u * (o + j) + 1u] += mbuf_r[kk] << 1;
+                mix[2u * (o + j)] += mbuf_l[kk] * g;
+                mix[2u * (o + j) + 1u] += mbuf_r[kk] * g;
             }
         }
         if (song.psg_clock) {

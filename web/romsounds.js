@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * ROMsounds : lire un fichier VGM (en-tête, étiquettes GD3), le préparer pour le FM-1 et le découper en SysEx.
- * Ce que reçoit le FM-1 (« RSM4 », firmware/src/romsounds.c) :
- *   en-tête de 64 octets : "RSM4", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
+ * Ce que reçoit le FM-1 (« RSM5 », firmware/src/romsounds.c) :
+ *   en-tête de 72 octets : "RSM5", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
  *   parties, avertissements, bruit du SN76489 (rebouclage | largeur << 16), horloges Game Boy et NES, tempo (BPM x 100, deviné :
- *   beatsOf) et position du premier temps (trames), horloge et type de l'AY-3-8910 / YM2149 ; puis la banque
+ *   beatsOf) et position du premier temps (trames), horloge et type de l'AY-3-8910 / YM2149, horloge et type de l'OPL (1 : YM3812, 2 : YM3526) ; puis la banque
  *   d'échantillons (brute : pour le YM2612, toutes les données de type 0 bout à bout ; pour la NES, l'image de sa mémoire
  *   $8000-$FFFF, que lit le DMC), puis les commandes
  *   avant la boucle (A) et à partir de la boucle (B), chacune compressée (deflate brut). Le FM-1 garde le tout compressé
@@ -19,7 +19,7 @@ const VGM_ERR = { 0x41: 'fichier trop gros pour le FM-1', 0x42: 'données hors d
   0x47: 'attribution refusée par le FM-1', 0x48: 'le FM-1 n’a pas pu l’enregistrer (mémoire flash)' };
 const LIB_MAX = 40;                      // morceaux au plus dans la bibliothèque du FM-1 (firmware : LIB_MAX)
 // horloges des autres puces dans l'en-tête (spécification VGM 1.71)
-const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x58, 0x5C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
+const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x4C, 0x58, 0x5C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
 const rd32 = (u, i) => (u[i] | u[i + 1] << 8 | u[i + 2] << 16 | u[i + 3] << 24) >>> 0;
 // l'écran du FM-1 n'a que l'ASCII : accents retirés, le reste remplacé par « ? »
 const ascii = t => (t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x20-\x7E]/g, '?').trim().slice(0, 28);
@@ -39,6 +39,8 @@ function parseVgm(u) {
   const gb = head >= 0x84 ? rd32(u, 0x80) & 0x3FFFFFFF : 0, nes = head >= 0x88 ? rd32(u, 0x84) & 0x3FFFFFFF : 0;
   const fds = head >= 0x88 && (rd32(u, 0x84) & 0x80000000) !== 0;
   const ay = head >= 0x78 ? rd32(u, 0x74) & 0x3FFFFFFF : 0, ayType = ay && head >= 0x79 ? u[0x78] : 0;
+  const opl2 = head >= 0x54 ? rd32(u, 0x50) & 0x3FFFFFFF : 0, opl1 = head >= 0x58 ? rd32(u, 0x54) & 0x3FFFFFFF : 0;
+  const opl = opl2 || opl1, oplType = opl2 ? 1 : opl1 ? 2 : 0;   // OPL2 (AdLib, Sound Blaster) ou OPL
   const start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
   const gd3 = rd32(u, 0x14) ? 0x14 + rd32(u, 0x14) : 0;
   const tags = [];
@@ -50,12 +52,14 @@ function parseVgm(u) {
   let others = false;
   for (const o of OTHER_CHIPS) if (o + 4 <= Math.min(start, 0x100) && (rd32(u, o) & 0x3FFFFFFF)) others = true;
   if (ver >= 0x110 && rd32(u, 0x10)) others = true;
+  if ((head >= 0x54 && rd32(u, 0x50) & 0x40000000) || (opl2 && opl1)) others = true;   // (une seule puce OPL)
   const body = u.subarray(0, gd3 > start ? gd3 : u.length);
-  if (!ym && !sn && !gb && !nes && !ay) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES, AY / YM2149)');
+  if (!ym && !sn && !gb && !nes && !ay && !opl) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES, AY / YM2149, AdLib)');
+  if (ym && opl) others = true;                  // (le FM-1 ne joue qu'une puce FM : le YM2612)
   if (fds) others = true;                        // (le FDS de la NES : pas encore)
-  return { body, ym, sn, gb, nes, ay, ayType, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
+  return { body, ym, sn, gb, nes, ay, ayType, opl, oplType, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
            title: ascii(tags[0] || tags[1]), game: ascii(tags[2] || tags[3]), system: tags[4] || '', author: tags[6] || '',
-           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : gb ? 'Game Boy' : nes ? 'NES' : ay ? (ayType & 0xF0 ? 'YM2149' : 'AY-3-8910') : 'SN76489') };
+           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : opl ? 'PC (AdLib)' : gb ? 'Game Boy' : nes ? 'NES' : ay ? (ayType & 0xF0 ? 'YM2149' : 'AY-3-8910') : 'SN76489') };
 }
 
 // longueur d'une commande VGM à la position p (spécification 1.71) ; 0 : fin
@@ -72,7 +76,7 @@ function cmdLen(u, p) {
   if (c >= 0xE0) return 5;
   return 1;
 }
-const KEEP = c => c === 0xA0 || c === 0xB3 || c === 0xB4 || c === 0x4F || c === 0x50 || c === 0x52 || c === 0x53 || c === 0x61 || c === 0x62 || c === 0x63 || (c >= 0x70 && c <= 0x8F) || c === 0xE0;
+const KEEP = c => c === 0xA0 || c === 0x5A || c === 0x5B || c === 0xB3 || c === 0xB4 || c === 0x4F || c === 0x50 || c === 0x52 || c === 0x53 || c === 0x61 || c === 0x62 || c === 0x63 || (c >= 0x70 && c <= 0x8F) || c === 0xE0;
 
 /** Le tempo du morceau, deviné d'après les débuts de notes (YM2612 : key-on ; DAC : départs d'échantillons ; PSG : attaques
  * de volume ; Game Boy, NES : déclenchements) sur les 90 premières secondes : { bpm, phase (trames à 44,1 kHz du premier
@@ -81,7 +85,8 @@ const KEEP = c => c === 0xA0 || c === 0xB3 || c === 0xB4 || c === 0x4F || c === 
 function beatsOf(u, start) {
   const BIN = 441, MAX = 9000;                   // 10 ms, 90 s
   const e = new Float32Array(MAX + 1);
-  const vol = [15, 15, 15, 15], ayv = [0, 0, 0];
+  const vol = [15, 15, 15, 15], ayv = [0, 0, 0], kon = new Uint8Array(9);
+  let bd = 0;
   let t = 0, n = 0, latch = 0;
   const hit = w => { const i = Math.floor(t / BIN); if (i < MAX) { e[i] += w; n++; } };
   for (let p = start; p < u.length && t < MAX * BIN;) {
@@ -101,6 +106,11 @@ function beatsOf(u, start) {
     } else if (c === 0xB3 && (u[p + 1] === 0x04 || u[p + 1] === 0x09 || u[p + 1] === 0x0E || u[p + 1] === 0x13) && (u[p + 2] & 0x80)) hit(u[p + 1] === 0x13 ? 1.5 : 1);
     else if (c === 0xB4 && (u[p + 1] === 0x03 || u[p + 1] === 0x07 || u[p + 1] === 0x0B || u[p + 1] === 0x0F)) hit(u[p + 1] === 0x0F ? 1.5 : 1);
     else if (c === 0xB4 && u[p + 1] === 0x15 && (u[p + 2] & 0x10)) hit(1.5);   // DPCM
+    else if ((c === 0x5A || c === 0x5B) && u[p + 1] >= 0xB0 && u[p + 1] <= 0xB8) {   // OPL : key-on
+      const ch = u[p + 1] - 0xB0, on = u[p + 2] & 0x20; if (on && !kon[ch]) hit(1); kon[ch] = on;
+    } else if ((c === 0x5A || c === 0x5B) && u[p + 1] === 0xBD) {                     // OPL : percussions frappées
+      const v = u[p + 2] & 0x1F; if ((u[p + 2] & 0x20) && (v & ~bd)) hit(v & 0x10 ? 1.5 : 1); bd = u[p + 2] & 0x20 ? v : 0;
+    }
     else if (c === 0xA0 && (u[p + 1] & 0x7F) === 13) hit(1);                     // AY : enveloppe relancée
     else if (c === 0xA0 && (u[p + 1] & 0x7F) >= 8 && (u[p + 1] & 0x7F) <= 10) {  // AY : volume qui monte
       const ch = (u[p + 1] & 0x7F) - 8, v = u[p + 2] & 31; if ((v & 16) || v >= (ayv[ch] & 15) + 4) hit(1); ayv[ch] = v;
@@ -247,8 +257,8 @@ async function packVgm(u) {
   const end = Uint8Array.of(0x66);
   const P = v.ym ? cat(pcm) : nesMem || new Uint8Array(0), A = await deflateRaw(cat([...a, end])), B = loop ? await deflateRaw(cat([...b, end])) : new Uint8Array(0);
   const beat = beatsOf(u, start);
-  const head = new Uint8Array(64), dv = new DataView(head.buffer);
-  head.set([0x52, 0x53, 0x4D, 0x34]);                 // "RSM4"
+  const head = new Uint8Array(72), dv = new DataView(head.buffer);
+  head.set([0x52, 0x53, 0x4D, 0x35]);                 // "RSM5"
   dv.setUint32(4, v.ym, true); dv.setUint32(8, v.sn, true);
   dv.setUint32(12, v.total, true); dv.setUint32(16, loop ? v.loop : 0, true);
   dv.setUint32(20, P.length, true); dv.setUint32(24, A.length, true); dv.setUint32(28, B.length, true);
@@ -257,6 +267,7 @@ async function packVgm(u) {
   dv.setUint32(40, v.gb, true); dv.setUint32(44, v.nes, true);
   dv.setUint32(48, Math.round(beat.bpm * 100), true); dv.setUint32(52, beat.phase, true);   // tempo (BPM x 100), 1er temps
   dv.setUint32(56, v.ay, true); dv.setUint32(60, v.ayType, true);                         // AY-3-8910 / YM2149
+  dv.setUint32(64, v.ym ? 0 : v.opl, true); dv.setUint32(68, v.ym ? 0 : v.oplType, true);  // OPL2 / OPL
   const blob = cat([head, P, A, B]);
   return Object.assign(v, { blob, bpm: beat.bpm, phase: beat.phase, pcmLen: P.length, aLen: A.length, bLen: B.length, dacStream, raw: u.length });
 }
