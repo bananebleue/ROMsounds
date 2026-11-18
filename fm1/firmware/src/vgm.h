@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* ROMsounds : lecture des commandes d'un fichier VGM (https://vgmrips.net/wiki/VGM_Specification) pour la Mega Drive :
  * YM2612 (FM + DAC) et SN76489 (PSG) ; la Master System et la Game Gear (SN76489 seul, stéréo 0x4F) ; la Game Boy
- * (0xB3), la NES (0xB4) l'AY-3-8910 / YM2149 (0xA0 : Atari ST, Amstrad CPC, ZX Spectrum…) l'OPL2 / OPL (0x5A, 0x5B : AdLib) et le YM2610 (0x58, 0x59 : Neo-Geo). La page (web/romsounds.js) a déjà retiré l'en-tête, les étiquettes, les blocs de
+ * (0xB3), la NES (0xB4) l'AY-3-8910 / YM2149 (0xA0 : Atari ST, Amstrad CPC, ZX Spectrum…) l'OPL2 / OPL (0x5A, 0x5B : AdLib) le YM2610 (0x58, 0x59 : Neo-Geo), le YM2151, le YM2203 et l'OKI MSM6295 (0x54, 0x55, 0xB8 : arcade). La page (web/romsounds.js) a déjà retiré l'en-tête, les étiquettes, les blocs de
  * données (la banque PCM arrive à part) et les commandes des autres puces ; les commandes arrivent une à une, par
  * vgm_get() (décompression au fil de l'eau dans l'app).
  *
@@ -15,6 +15,8 @@
 
 enum { VGM_W_OTHERCHIPS = 1, VGM_W_DACSTREAM = 2 };   /* avertissements (bits de v.warn, venus de la page) */
 
+#define OPM_GAIN 1                              /* YM2151 : comme libvgm (vgm2wav, mesuré) */
+#define OPN_GAIN 2                              /* YM2203 : de même */
 #define OPNB_GAIN 1                             /* YM2610 : FM + ADPCM, comme libvgm (vgm2wav, mesuré) */
 #define OPL_GAIN 1                              /* OPL : niveau de sortie, comme libvgm (vgm2wav, mesuré) */
 
@@ -29,7 +31,8 @@ typedef struct {
     uint32_t bpm100, beat0;
     uint32_t ay_clock, ay_type;         /* AY-3-8910 / YM2149 (type VGM : 0x00 AY, 0x10 YM2149...) */
     uint32_t opl_clock, opl_type;
-    uint32_t opnb_clock, opnb_type, adpcm_a_len;   /* YM2610 (type bit 0 : YM2610B) ; la banque : ADPCM-A puis ADPCM-B */       /* OPL2 / OPL (type : 1 YM3812, 2 YM3526) */
+    uint32_t opnb_clock, opnb_type, adpcm_a_len;
+    uint32_t opm_clock, opn_clock, oki_clock;   /* arcade : YM2151, YM2203, OKI MSM6295 (bit 31 : broche 7 haute) */   /* YM2610 (type bit 0 : YM2610B) ; la banque : ADPCM-A puis ADPCM-B */       /* OPL2 / OPL (type : 1 YM3812, 2 YM3526) */
     uint32_t is_mod;                    /* 1 : un module Amiga (mod.h), pas des commandes VGM */             /* tempo deviné par la page (BPM x 100, 0 : inconnu), premier temps (trames) */
 } vgm_t;
 
@@ -43,6 +46,9 @@ static void vgm_nes(uint32_t reg, uint32_t val);
 static void vgm_ay(uint32_t reg, uint32_t val);
 static void vgm_opl(uint32_t reg, uint32_t val);
 static void vgm_opnb(uint32_t port, uint32_t reg, uint32_t val);
+static void vgm_opm(uint32_t reg, uint32_t val);
+static void vgm_opn(uint32_t reg, uint32_t val);
+static void vgm_oki(uint32_t reg, uint32_t val);
 
 static uint32_t vgm_next(vgm_t *v)
 {
@@ -57,6 +63,16 @@ static uint32_t vgm_next(vgm_t *v)
         if (c == 0x58 || c == 0x59) {          /* YM2610 (Neo-Geo) : ports 0 et 1 */
             a = vgm_get(); b = vgm_get();
             if (b >= 0) vgm_opnb((uint32_t)c - 0x58u, (uint32_t)a, (uint32_t)b);
+            continue;
+        }
+        if (c == 0x54 || c == 0x55) {          /* YM2151 (OPM), YM2203 (OPN) : arcade */
+            a = vgm_get(); b = vgm_get();
+            if (b >= 0) { if (c == 0x54) vgm_opm((uint32_t)a, (uint32_t)b); else vgm_opn((uint32_t)a, (uint32_t)b); }
+            continue;
+        }
+        if (c == 0xB8) {                       /* OKI MSM6295 (le 2e circuit, bit 7 : ignoré) */
+            a = vgm_get(); b = vgm_get();
+            if (b >= 0 && !(a & 0x80)) vgm_oki((uint32_t)a, (uint32_t)b);
             continue;
         }
         if (c == 0x5A || c == 0x5B) {          /* YM3812 (OPL2 : AdLib, Sound Blaster), YM3526 (OPL) */

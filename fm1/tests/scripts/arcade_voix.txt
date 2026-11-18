@@ -1,0 +1,6 @@
+# ROMsounds, arcade : FM 1 (touche 0) puis OKI 1 (touche 8) coupées, sur build/arcade.rsm
+0 keys 0x01
+100 keys 0
+900 keys 0x100
+1000 keys 0
+4100 end

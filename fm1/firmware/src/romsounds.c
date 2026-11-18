@@ -33,10 +33,12 @@ static void app_sysex(const uint8_t *p, uint32_t n);
 #include "platform.c"
 #include "../ext/fmopn/fmopn.h"                 /* compilé à part, en -O2 (tools/build.py, tests/run_host.sh) */
 #include "../ext/fmopl/fmopl.h"                 /* (de même) OPL2 / OPL : AdLib, Sound Blaster */
+#include "../ext/ym2151/ym2151.h"               /* (de même) YM2151 : arcade */
 #include "psg.h"
 #include "gb_apu.h"
 #include "nes_apu.h"
 #include "ay_apu.h"
+#include "oki.h"
 #include "mod.h"
 #include "fx.h"
 #include "vgm.h"
@@ -112,6 +114,9 @@ static ay_t ay;
 static mod_t mod;
 static void *opl;
 static void *opnb;                              /* YM2610 (Neo-Geo) : FM, ADPCM-A, ADPCM-B ; son SSG : ay */
+static void *opm, *opn;                         /* arcade : YM2151 ; YM2203 (son SSG : ay) */
+static oki_t oki;                               /* arcade : OKI MSM6295 */
+static uint32_t oki_step0;
 
 static void vgm_ym(uint32_t port, uint32_t reg, uint32_t val)
 {
@@ -131,6 +136,14 @@ static void vgm_opnb(uint32_t port, uint32_t reg, uint32_t val)
     ym2610_write(opnb, (UINT8)(port * 2u), (UINT8)reg);
     ym2610_write(opnb, (UINT8)(port * 2u + 1u), (UINT8)val);
 }
+static void vgm_opm(uint32_t reg, uint32_t val) { if (opm) ym2151_write_reg(opm, (UINT8)reg, (UINT8)val); }
+static void vgm_opn(uint32_t reg, uint32_t val)
+{
+    if (!opn) return;
+    if (reg < 0x10u) { ay_write(&ay, reg, val); return; }   /* le SSG : un YM2149 à horloge / 2 */
+    ym2203_write(opn, 0, (UINT8)reg); ym2203_write(opn, 1, (UINT8)val);
+}
+static void vgm_oki(uint32_t reg, uint32_t val) { oki_write(&oki, reg, val); }
 static void vgm_opl(uint32_t reg, uint32_t val)
 {
     if (!opl) return;
@@ -194,10 +207,10 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
         song_size = size;
         return 0;
     }
-    if (size < 40u || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] < '1' || m[3] > '6')) return 4;
-    hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : m[3] == '3' ? 56u : m[3] == '4' ? 64u : m[3] == '5' ? 72u : 88u;   /* RSM1 : 40 ;
-                                                 * RSM2 (+ Game Boy, NES) : 48 ; RSM3 (+ tempo) : 56 ; RSM4 (+ AY / YM2149) : 64 ;
-                                                 * RSM5 (+ OPL) : 72 ; RSM6 (+ YM2610) : 88 */
+    if (size < 40u || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] < '1' || m[3] > '7')) return 4;
+    hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : m[3] == '3' ? 56u : m[3] == '4' ? 64u : m[3] == '5' ? 72u : m[3] == '6' ? 88u : 104u;
+                                                /* RSM1 : 40 ; RSM2 (+ Game Boy, NES) : 48 ; RSM3 (+ tempo) : 56 ; RSM4 (+ AY /
+                                                 * YM2149) : 64 ; RSM5 (+ OPL) : 72 ; RSM6 (+ YM2610) : 88 ; RSM7 (+ arcade) : 104 */
     if (size < hl) return 4;
     pcm = rd32(m + 20); a = rd32(m + 24); b = rd32(m + 28);
     if (hl + pcm + a + b != size || !a) return 4;
@@ -217,12 +230,17 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
     song.opnb_type = hl > 72u ? rd32(m + 76) : 0u;
     song.adpcm_a_len = hl > 72u ? rd32(m + 80) : 0u;
     if (song.adpcm_a_len > pcm) return 4;
+    song.opm_clock = hl > 88u ? rd32(m + 88) : 0u;
+    song.opn_clock = hl > 88u ? rd32(m + 92) : 0u;
+    song.oki_clock = hl > 88u ? rd32(m + 96) : 0u;
     if (song.opnb_clock && !song.ay_clock) { song.ay_clock = song.opnb_clock / 4u; song.ay_type = 0x10u; }   /* le SSG */
+    if (song.opn_clock && !song.ay_clock) { song.ay_clock = song.opn_clock / 2u; song.ay_type = 0x10u; }     /* (YM2203) */
     if (song.bpm100 && (song.bpm100 < 3000u || song.bpm100 > 40000u)) song.bpm100 = 0;   /* (30 .. 400 BPM) */
     song.pcm = m + hl; song.pcm_len = pcm;
     part_a = m + hl + pcm; len_a = a;
     part_b = part_a + a; len_b = b;
-    if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock && !song.ay_clock && !song.opl_clock && !song.opnb_clock) return 3;
+    if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock && !song.ay_clock && !song.opl_clock && !song.opnb_clock && !song.opm_clock && !song.opn_clock &&
+        !song.oki_clock) return 3;
     song_size = size;
     return 0;
 }
@@ -231,10 +249,11 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
 static uint32_t ym_step, ym_pos;                /* Q16 : échantillons de la puce par trame */
 static DEV_SMPL mbuf_l[640], mbuf_r[640];       /* [0] : le dernier échantillon du lot précédent (hauteur +5 : ~420) */
 static uint32_t mbuf_n;
-#define PITCH_MAX (song.ym_clock || song.opnb_clock ? 5 : song.opl_clock ? 1 : 12)   /* demi-tons vers le haut : le YM2612 et l'OPL coûtent
+static uint32_t oki_at;                         /* (voices) la première voix de l'OKI */
+#define PITCH_MAX (song.ym_clock || song.opnb_clock || song.opn_clock ? 5 : song.opm_clock ? 3 : song.opl_clock ? 1 : 12)   /* demi-tons vers le haut : le YM2612 et l'OPL coûtent
                                                  * (OPL : ~1,3 fois le YM2612, mesuré sur PC) */
 #define OPNB_FM (song.opnb_type & 1u ? 6u : 4u)   /* voies FM du YM2610 (YM2610B : 6) */
-#define OPL_GAIN_OR_2 (song.ym_clock ? 2 : opnb ? OPNB_GAIN : OPL_GAIN)
+#define OPL_GAIN_OR_2 (song.ym_clock ? 2 : opnb ? OPNB_GAIN : opm ? OPM_GAIN : opn ? OPN_GAIN : OPL_GAIN)
 
 static uint32_t voices(uint32_t *ym_at, uint32_t *psg_at, uint32_t *gb_at, uint32_t *nes_at)
 {
@@ -242,9 +261,12 @@ static uint32_t voices(uint32_t *ym_at, uint32_t *psg_at, uint32_t *gb_at, uint3
     if (song.is_mod) { *ym_at = *psg_at = *gb_at = *nes_at = 0; return mod.nch; }   /* module : ses voies */
     *ym_at = n; if (song.ym_clock) n += 7u;     /* FM 1-6, DAC */
     else if (song.opnb_clock) n += OPNB_FM + 7u;   /* YM2610 : FM 1-4 (YM2610B : 1-6), ADPCM-A 1-6, ADPCM-B */
+    else if (song.opm_clock) n += 8u;           /* YM2151 : FM 1-8 */
+    else if (song.opn_clock) n += 3u;           /* YM2203 : FM 1-3 */
     *psg_at = n; if (song.psg_clock) n += 4u;
     *gb_at = n; if (song.gb_clock) n += 4u;
     *nes_at = n; if (song.nes_clock) n += 5u;
+    oki_at = n; if (song.oki_clock) n += 4u;    /* OKI MSM6295 : 4 voix */
     if (song.opl_clock) n += 10u;               /* OPL : 9 voies + les percussions (avant l'AY) */
     if (song.ay_clock) n += 4u;                 /* AY / YM2149 : voies A, B, C, bruit (les 4 dernières) */
     return n;
@@ -259,6 +281,9 @@ static void fx_apply_mute(void)
         opl_set_mute_mask(opl, (mm & 0x1FFu) | (mm >> 9 & 1u ? 0x3E00u : 0u));
     }
     if (ym) ym2612_set_mute_mask(ym, song.ym_clock ? mute >> y & 0x7Fu : 0u);
+    if (opm) ym2151_set_mute_mask(opm, mute >> y & 0xFFu);
+    if (opn) ym2203_set_mute_mask(opn, mute >> y & 7u);
+    oki.mute = (uint8_t)(song.oki_clock ? mute >> oki_at & 15u : 0u);
     if (opnb) {                                  /* YM2610 : voies FM 1, 2, 4, 5 (YM2610B : 0-5), ADPCM-A en 6-11, B en 12 */
         uint32_t mm = mute >> y, fm = OPNB_FM == 6u ? mm & 0x3Fu : (mm & 3u) << 1 | (mm >> 2 & 3u) << 4;
         ym2610_set_mute_mask(opnb, fm | (mm >> OPNB_FM & 0x7Fu) << 6);
@@ -275,6 +300,7 @@ static void fx_apply_rate(void)                  /* la hauteur : les puces vont 
     gb.step_q16 = mul_q16(gb_step0, r);
     nes.step_q16 = mul_q16(nes_step0, r);
     ay.step_q16 = mul_q16(ay_step0, r);
+    oki.step_q16 = mul_q16(oki_step0, r);
     mod.rate_q16 = r;
 }
 
@@ -283,7 +309,7 @@ static void song_start(void)
     uint32_t yc = song.ym_clock ? song.ym_clock : 7670453u, rate;
     if (yc > 9000000u) yc = 9000000u;
     rate = yc / 144u;
-    ym = 0; opnb = 0;
+    ym = 0; opnb = 0; opm = 0; opn = 0;
     if (song.opnb_clock) {                      /* Neo-Geo : le YM2610 prend la place du YM2612 (même mémoire) */
         uint32_t oc = song.opnb_clock > 9000000u ? 9000000u : song.opnb_clock;
         rate = oc / 144u;
@@ -291,12 +317,23 @@ static void song_start(void)
         ym2610_reset_chip(opnb);
         ym2610_set_roms(opnb, song.adpcm_a_len ? song.pcm : 0, song.adpcm_a_len,
                         song.pcm_len > song.adpcm_a_len ? song.pcm + song.adpcm_a_len : 0, song.pcm_len - song.adpcm_a_len);
+    } else if (song.opm_clock && !song.ym_clock) {   /* arcade : YM2151 à sa fréquence native (horloge / 64) */
+        uint32_t oc = song.opm_clock > 4500000u ? 4500000u : song.opm_clock;
+        rate = oc / 64u;
+        opm = ym2151_init(oc, rate);
+        ym2151_reset_chip(opm);
+    } else if (song.opn_clock && !song.ym_clock) {   /* arcade : YM2203 (horloge / 72), dans la place du YM2612 */
+        uint32_t oc = song.opn_clock > 6000000u ? 6000000u : song.opn_clock;
+        rate = oc / 72u;
+        opn = ym2203_init(NULL, oc, rate, NULL, NULL);
+        ym2203_reset_chip(opn);
     } else {
         ym = ym2612_init(NULL, yc, rate, NULL, NULL);
         ym2612_reset_chip(ym);
     }
+    oki_init(&oki, song.oki_clock & 0x7FFFFFFFu, song.oki_clock >> 31, song.oki_clock ? song.pcm : 0, song.pcm_len);
     opl = 0;
-    if (song.opl_clock && !song.ym_clock) {     /* OPL2 / OPL : à sa fréquence native (horloge / 72), comme le YM2612 */
+    if (song.opl_clock && !song.ym_clock && !opnb && !opm && !opn) {   /* OPL2 / OPL : à sa fréquence native (horloge / 72), comme le YM2612 */
         uint32_t oc = song.opl_clock > 4000000u ? 4000000u : song.opl_clock;
         rate = oc / 72u;
         if (song.opl_type == 2u) { opl = ym3526_init(oc, rate); if (opl) ym3526_reset_chip(opl); }
@@ -308,7 +345,7 @@ static void song_start(void)
     ay_init(&ay, song.ay_clock, (song.ay_type & 0xF0u) != 0u);
     if (song.is_mod) mod_load(&mod, vgm_buf + 64, song_size - 64u);   /* (depuis le début) */
     ym_step0 = (rate << 16) / 44100u;           /* (rate < 65536 : pas de débordement) */
-    psg_step0 = psg.step_q16; gb_step0 = gb.step_q16; nes_step0 = nes.step_q16; ay_step0 = ay.step_q16;
+    psg_step0 = psg.step_q16; gb_step0 = gb.step_q16; nes_step0 = nes.step_q16; ay_step0 = ay.step_q16; oki_step0 = oki.step_q16;
     if (pitch > PITCH_MAX) pitch = PITCH_MAX;
     fx_apply_rate();
     fx_apply_mute();
@@ -351,11 +388,14 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
         n = ((uint32_t)wait_q8 + tempo - 1u) / tempo;   /* trames de sortie jusqu'à la commande suivante, au tempo choisi */
         if (n > left) n = left;
         for (j = 0; j < n; j++) { p += ym_step; k += p >> 16; p &= 0xFFFFu; }
-        if (song.ym_clock || opl || opnb) {      /* la puce FM (YM2612, YM2610 ou OPL) à sa fréquence, puis vers 44,1 kHz */
+        if (song.ym_clock || opl || opnb || opm || opn) {   /* la puce FM (YM2612, YM2610, YM2151, YM2203 ou OPL) à sa
+                                                 * fréquence, puis vers 44,1 kHz */
             mbuf_l[0] = mbuf_l[mbuf_n]; mbuf_r[0] = mbuf_r[mbuf_n];
             if (k) {
                 if (song.ym_clock) ym2612_update_one(ym, k, b);
                 else if (opnb) { if (song.opnb_type & 1u) ym2610b_update_one(opnb, k, b); else ym2610_update_one(opnb, k, b); }
+                else if (opm) ym2151_update_one(opm, k, b);
+                else if (opn) ym2203_update_one(opn, k, b);
                 else if (song.opl_type == 2u) ym3526_update_one(opl, k, b);
                 else ym3812_update_one(opl, k, b);
             }
@@ -378,6 +418,7 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
         if (song.gb_clock) gb_render(&gb, mix + 2u * o, n);
         if (song.nes_clock) nes_render(&nes, mix + 2u * o, n);
         if (song.ay_clock) ay_render(&ay, mix + 2u * o, n);
+        if (song.oki_clock) oki_render(&oki, mix + 2u * o, n);
         wait_q8 -= (int32_t)(n * tempo);
         played_frac += n * tempo; played += played_frac >> 8; played_frac &= 255u;
         left -= n; o += n;
@@ -456,7 +497,7 @@ static void app_sysex(const uint8_t *p, uint32_t n)
         i++; t = 0;
         while (i < n && p[i] && t < sizeof sys - 1u) sys[t++] = (char)p[i++];
         sys[t] = 0;
-        ack_cmd = 9;                            /* 9 : RSM6 (+ YM2610) ; 8 : RSM5 (+ OPL) ; 7 : RSM4 et modules (RSMD) ; 6 : RSM4 ; 5 : RSM3 ; 4 : RSM2 ; 2 : RSM1 ; 1 : VGM brut */
+        ack_cmd = 10;                           /* 10 : RSM7 (+ arcade) ; 9 : RSM6 (+ YM2610) ; 8 : RSM5 (+ OPL) ; 7 : RSM4 et modules (RSMD) ; 6 : RSM4 ; 5 : RSM3 ; 4 : RSM2 ; 2 : RSM1 ; 1 : VGM brut */
     } else if (p[3] == 2u && n >= 6u) {         /* données */
         uint32_t seq = (uint32_t)p[4] | (uint32_t)p[5] << 7, off = seq * 512u, want, got;
         if (!rx_active || off >= rx_size) { ack_cmd = 0x42; return; }
@@ -694,18 +735,22 @@ static const char *voice_name(uint32_t k)
     static const char *const GB[4] = {"Carre 1", "Carre 2", "Onde", "Bruit"};
     static const char *const NS[5] = {"Carre 1", "Carre 2", "Triangle", "Bruit", "DPCM"};
     static const char *const AY[4] = {"Voie A", "Voie B", "Voie C", "Bruit AY"};
+    static const char *const NB[8] = {"FM 1", "FM 2", "FM 3", "FM 4", "FM 5", "FM 6", "FM 7", "FM 8"};
     static const char *const OP[10] = {"FM 1", "FM 2", "FM 3", "FM 4", "FM 5", "FM 6", "FM 7", "FM 8", "FM 9", "Percussions"};
     static const char *const MD[8] = {"Voie 1", "Voie 2", "Voie 3", "Voie 4", "Voie 5", "Voie 6", "Voie 7", "Voie 8"};
     if (song.is_mod) return k < 8u ? MD[k] : "?";
     uint32_t y, p, g, a, tot = voices(&y, &p, &g, &a);
     if (song.ay_clock && k >= tot - 4u && k < tot) return AY[k - (tot - 4u)];
-    if (song.opl_clock && k >= a + (song.nes_clock ? 5u : 0u) && k < a + (song.nes_clock ? 5u : 0u) + 10u)
-        return OP[k - a - (song.nes_clock ? 5u : 0u)];
+    if (song.opl_clock && k >= tot - (song.ay_clock ? 4u : 0u) - 10u && k < tot - (song.ay_clock ? 4u : 0u))
+        return OP[k - (tot - (song.ay_clock ? 4u : 0u) - 10u)];   /* (l'OPL : juste avant l'AY) */
     if (song.ym_clock && k < y + 7u) return YM[k - y];
+    if ((song.opm_clock || song.opn_clock) && !song.ym_clock && !song.opnb_clock && k >= y && k < y + (song.opm_clock ? 8u : 3u))
+        return NB[k - y];
+    if (song.oki_clock && k >= oki_at && k < oki_at + 4u) { static const char *const OK[4] = {"OKI 1", "OKI 2", "OKI 3", "OKI 4"}; return OK[k - oki_at]; }
     if (song.opnb_clock && k >= y && k < y + OPNB_FM + 7u) {
-        static const char *const NB[13] = {"FM 1", "FM 2", "FM 3", "FM 4", "FM 5", "FM 6",
+        static const char *const NB2[13] = {"FM 1", "FM 2", "FM 3", "FM 4", "FM 5", "FM 6",
                                            "ADPCM 1", "ADPCM 2", "ADPCM 3", "ADPCM 4", "ADPCM 5", "ADPCM 6", "ADPCM-B"};
-        return k - y < OPNB_FM ? NB[k - y] : NB[6u + (k - y - OPNB_FM)];
+        return k - y < OPNB_FM ? NB2[k - y] : NB2[6u + (k - y - OPNB_FM)];
     }
     if (song.psg_clock && k >= p && k < p + 4u) return SN[k - p];
     if (song.gb_clock && k >= g && k < g + 4u) return GB[k - g];

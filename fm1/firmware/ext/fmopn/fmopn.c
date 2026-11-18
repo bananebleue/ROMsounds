@@ -168,7 +168,7 @@
 
 #include "fmopn.h"
 
-/* ROMsounds : la place de la puce, commune au YM2612 et au YM2610 (jamais les deux à la fois : ~21 Ko de RAM) */
+/* ROMsounds : la place de la puce, commune au YM2612, au YM2610 et au YM2203 (jamais deux à la fois : ~21 Ko de RAM) */
 static void *fm_one(void);
 
 
@@ -2524,10 +2524,8 @@ void * ym2203_init(void *param, UINT32 clock, UINT32 rate,
 {
 	YM2203 *F2203;
 
-	/* allocate ym2203 state space */
-	F2203 = (YM2203 *)calloc(1,sizeof(YM2203));
-	if( F2203==NULL)
-		return NULL;
+	F2203 = (YM2203 *)fm_one();	/* ROMsounds : une seule puce, pas d'allocation (place commune avec le YM2612) */
+	memset(F2203, 0, sizeof(YM2203));
 
 	/* allocate total level table (128kb space) */
 	init_tables();
@@ -2570,9 +2568,7 @@ void ym2203_set_srchg_cb(void *chip, DEVCB_SRATE_CHG cbFunc, void* dataPtr)
 /* shut down emulator */
 void ym2203_shutdown(void *chip)
 {
-	YM2203 *F2203 = (YM2203 *)chip;
-
-	free(F2203);
+	(void)chip;	/* ROMsounds : instance statique */
 }
 
 /* YM2203 I/O interface */
@@ -4774,6 +4770,9 @@ static void *fm_one(void)
 	static union {
 #if (BUILD_YM2610||BUILD_YM2610B)
 		YM2610 b;
+#endif
+#if BUILD_YM2203
+		YM2203 c;
 #endif
 		YM2612 a;
 	} u;

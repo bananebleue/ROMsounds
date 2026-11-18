@@ -26,5 +26,6 @@ static inline int fmopn_abs(int v) { return v < 0 ? -v : v; }
 #define logerror(...) ((void)0)
 #define SNDDEV_SELECT
 #define SNDDEV_YM2612
+#define SNDDEV_YM2203	/* ROMsounds : aussi le YM2203 (OPN : arcade) */
 #define SNDDEV_YM2610	/* ROMsounds : aussi le YM2610 (Neo-Geo), avec ymdeltat.c */
 #endif

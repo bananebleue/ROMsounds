@@ -138,6 +138,24 @@ jobs:
           node ../tests/wav_compare.js build/pv_neogeo.wav build/host/romsounds.wav 1 6 1
           ROMSOUNDS_RSM=build/neogeo.rsm sh tests/run_host.sh tests/scripts/neogeo_voix.txt > /dev/null
           node ../tests/wav_check.js build/host/romsounds.wav 0.2-0.9:0 1.1-1.9:~1000 2.05-2.45:0 3.1-3.9:~926
+          # arcade : YM2151 + OKI MSM6295 (CPS1), tables du YM2151 à jour ; la page refait la ROM de l'OKI (phrases jouées,
+          # banques retirées) ; puis le YM2203 (FM + SSG) ; sur PC, voix coupées, et dans la page (même son)
+          cc -O2 -w -o build/gen_ym2151_tables tools/gen_ym2151_tables.c -lm
+          build/gen_ym2151_tables | cmp - firmware/ext/ym2151/ym2151_tables.h
+          printf '4100 end\n' > build/f4.txt
+          for m in arcade arcadeb; do
+            build/make_test_vgm build/$m.vgm $m > /dev/null && node ../tests/rx_test.js build/$m.vgm build/x.syx build/$m.rsm
+            test "$(stat -c %s build/$m.rsm)" -lt 8000
+            ROMSOUNDS_RSM=build/$m.rsm sh tests/run_host.sh build/f4.txt > /dev/null
+            node ../tests/wav_check.js build/host/romsounds.wav 0.2-0.9:~440 1.05-1.45:~505 1.55-1.7:1000 2.1-3.9:1000
+          done
+          node ../tests/preview_test.js build/arcade.rsm 4 build/pv_arcade.wav
+          node ../tests/wav_compare.js build/pv_arcade.wav build/host/romsounds.wav 1 4 1
+          ROMSOUNDS_RSM=build/arcade.rsm sh tests/run_host.sh tests/scripts/arcade_voix.txt > /dev/null
+          node ../tests/wav_check.js build/host/romsounds.wav 0.2-0.9:0 1.05-1.45:0 1.55-1.7:1000
+          build/make_test_vgm build/opn.vgm opn > /dev/null && node ../tests/rx_test.js build/opn.vgm build/x.syx build/opn.rsm
+          ROMSOUNDS_RSM=build/opn.rsm sh tests/run_host.sh build/f4.txt > /dev/null
+          node ../tests/wav_check.js build/host/romsounds.wav 0.2-0.9:~440 1.1-1.9:~1000 2.1-3.9:1000
           # Amiga : un module de test (tests/make_test_mod.js) préparé par la page, joué sur PC (hauteurs, coupures, glissando,
           # retour au début) et dans la page (même son)
           node ../tests/make_test_mod.js build/test.mod
@@ -167,7 +185,7 @@ jobs:
           # attribution par la page (SysEx 07, relue par 08) : le filtre sur KNOB1
           M="03 00 00 00 00 00 01 02 03 0B 07 06 0A 00 08 09 04 05"
           ROMSOUNDS_SX="0:7D 52 53 07 $M;100:7D 52 53 08" ROMSOUNDS_RSM=build/gb.rsm sh tests/run_host.sh tests/scripts/fx_map.txt > build/map.log
-          grep -q "BF 117 9" build/map.log && grep -q "SYSEX out F0 7D 52 53 18 $M F7" build/map.log
+          grep -q "BF 117 10" build/map.log && grep -q "SYSEX out F0 7D 52 53 18 $M F7" build/map.log
           node ../tests/wav_check.js build/host/romsounds.wav 0.4-0.9:1/2000
 
       - name: Chaîne JieLi (pkgman.jieliapp.com)

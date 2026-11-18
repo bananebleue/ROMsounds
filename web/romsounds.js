@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * ROMsounds : lire un fichier VGM (en-tête, étiquettes GD3), le préparer pour le FM-1 et le découper en SysEx.
- * Ce que reçoit le FM-1 (« RSM6 », firmware/src/romsounds.c) :
- *   en-tête de 88 octets : "RSM6", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
+ * Ce que reçoit le FM-1 (« RSM7 », firmware/src/romsounds.c) :
+ *   en-tête de 104 octets : "RSM7", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
  *   parties, avertissements, bruit du SN76489 (rebouclage | largeur << 16), horloges Game Boy et NES, tempo (BPM x 100, deviné :
  *   beatsOf) et position du premier temps (trames), horloge et type de l'AY-3-8910 / YM2149, horloge et type de l'OPL (1 : YM3812, 2 : YM3526), horloge et type du YM2610 (bit 0 : YM2610B), taille de
- *   l'ADPCM-A dans la banque ; puis la banque
+ *   l'ADPCM-A dans la banque, horloges du YM2151, du YM2203 et de l'OKI MSM6295 (bit 31 : broche 7) ; puis la banque
  *   d'échantillons (brute : pour le YM2612, toutes les données de type 0 bout à bout ; pour la NES, l'image de sa mémoire
- *   $8000-$FFFF, que lit le DMC ; pour le YM2610, les échantillons ADPCM-A puis ADPCM-B réellement joués), puis les commandes
+ *   $8000-$FFFF, que lit le DMC ; pour le YM2610, les échantillons ADPCM-A puis ADPCM-B réellement joués ; pour l'OKI MSM6295, sa ROM refaite : table des
+ *   phrases jouées puis leurs échantillons), puis les commandes
  *   avant la boucle (A) et à partir de la boucle (B), chacune compressée (deflate brut). Le FM-1 garde le tout compressé
  *   et décompresse en jouant ; à la fin de B, il reprend B : la boucle ne demande aucun retour en arrière.
  * Utilisé par index.html (navigateur) et tests/rx_test.js (Node). */
@@ -20,7 +21,7 @@ const VGM_ERR = { 0x41: 'fichier trop gros pour le FM-1', 0x42: 'données hors d
   0x47: 'attribution refusée par le FM-1', 0x48: 'le FM-1 n’a pas pu l’enregistrer (mémoire flash)' };
 const LIB_MAX = 40;                      // morceaux au plus dans la bibliothèque du FM-1 (firmware : LIB_MAX)
 // horloges des autres puces dans l'en-tête (spécification VGM 1.71)
-const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x58, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
+const OTHER_CHIPS = [0x38, 0x40, 0x48, 0x58, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x88, 0x8C, 0x90, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
 const rd32 = (u, i) => (u[i] | u[i + 1] << 8 | u[i + 2] << 16 | u[i + 3] << 24) >>> 0;
 // l'écran du FM-1 n'a que l'ASCII : accents retirés, le reste remplacé par « ? »
 const ascii = t => (t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x20-\x7E]/g, '?').trim().slice(0, 28);
@@ -42,6 +43,8 @@ function parseVgm(u) {
   const ay = head >= 0x78 ? rd32(u, 0x74) & 0x3FFFFFFF : 0, ayType = ay && head >= 0x79 ? u[0x78] : 0;
   const opl2 = head >= 0x54 ? rd32(u, 0x50) & 0x3FFFFFFF : 0, opl1 = head >= 0x58 ? rd32(u, 0x54) & 0x3FFFFFFF : 0;
   const nbRaw = head >= 0x50 ? rd32(u, 0x4C) : 0, opnb = nbRaw & 0x3FFFFFFF, opnbType = nbRaw & 0x80000000 ? 1 : 0;   // YM2610 (Neo-Geo)
+  const opmRaw = rd32(u, 0x30), opnRaw = head >= 0x48 ? rd32(u, 0x44) : 0, okiRaw = head >= 0x9C ? rd32(u, 0x98) : 0;   // arcade
+  const opm = opmRaw & 0x3FFFFFFF, opn = opnRaw & 0x3FFFFFFF, oki = okiRaw & 0x3FFFFFFF, okiPin7 = okiRaw & 0x80000000 ? 1 : 0;
   const opl3 = !opl2 && !opl1 && head >= 0x60 ? rd32(u, 0x5C) & 0x3FFFFFFF : 0;   // OPL3 (Sound Blaster 16) : joué en OPL2
   const opl = opl2 || opl1 || Math.round(opl3 / 4), oplType = opl2 || opl3 ? 1 : opl1 ? 2 : 0;
   const start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
@@ -58,13 +61,19 @@ function parseVgm(u) {
   if ((head >= 0x54 && rd32(u, 0x50) & 0x40000000) || (opl3 && rd32(u, 0x5C) & 0x40000000) || (opl2 && opl1)) others = true;   // (une seule puce OPL)
   if ((opl2 || opl1) && head >= 0x60 && rd32(u, 0x5C) & 0x3FFFFFFF) others = true;
   const body = u.subarray(0, gd3 > start ? gd3 : u.length);
-  if (!ym && !sn && !gb && !nes && !ay && !opl && !opnb) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES, AY / YM2149, AdLib, Neo-Geo)');
+  if (!ym && !sn && !gb && !nes && !ay && !opl && !opnb && !opm && !opn && !oki) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES, AY / YM2149, AdLib, Neo-Geo, arcade : YM2151, YM2203, OKI MSM6295)');
   if (ym && opl) others = true;
-  if ((ym && opnb) || (nbRaw & 0x40000000)) others = true;   // (une puce FM : le YM2612 d'abord ; un seul YM2610)                  // (le FM-1 ne joue qu'une puce FM : le YM2612)
+  if ((ym && opnb) || (nbRaw & 0x40000000)) others = true;
+  if ((opmRaw | opnRaw | okiRaw) & 0x40000000) others = true;   // (le second circuit d'une paire : ignoré)
+  const fm = ym ? 'ym' : opnb ? 'opnb' : opm ? 'opm' : opn ? 'opn' : opl ? 'opl' : '';   // une puce FM : la première
+  if ([ym, opnb, opm, opn, opl].filter(Boolean).length > 1) others = true;
+  const okiUse = oki && !ym && !opnb && !nes ? oki : 0;
+  if (oki && !okiUse) others = true;   // (une puce FM : le YM2612 d'abord ; un seul YM2610)                  // (le FM-1 ne joue qu'une puce FM : le YM2612)
   if (fds) others = true;                        // (le FDS de la NES : pas encore)
-  return { body, ym, sn, gb, nes, ay, ayType, opl, oplType, opl3, opnb: ym ? 0 : opnb, opnbType, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
+  return { body, ym, sn, gb, nes, ay, ayType, opl: fm === 'opl' ? opl : 0, oplType, opl3: fm === 'opl' ? opl3 : 0, opnb: fm === 'opnb' ? opnb : 0, opnbType,
+           opm: fm === 'opm' ? opm : 0, opn: fm === 'opn' ? opn : 0, oki: okiUse, okiPin7, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
            title: ascii(tags[0] || tags[1]), game: ascii(tags[2] || tags[3]), system: tags[4] || '', author: tags[6] || '',
-           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : opnb ? 'Neo-Geo' : opl3 ? 'PC (Sound Blaster 16)' : opl ? 'PC (AdLib)' : gb ? 'Game Boy' : nes ? 'NES' : ay ? (ayType & 0xF0 ? 'YM2149' : 'AY-3-8910') : 'SN76489') };
+           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : opnb ? 'Neo-Geo' : opm || opn || oki ? 'Arcade' : opl3 ? 'PC (Sound Blaster 16)' : opl ? 'PC (AdLib)' : gb ? 'Game Boy' : nes ? 'NES' : ay ? (ayType & 0xF0 ? 'YM2149' : 'AY-3-8910') : 'SN76489') };
 }
 
 // longueur d'une commande VGM à la position p (spécification 1.71) ; 0 : fin
@@ -91,6 +100,7 @@ function beatsOf(u, start) {
   const BIN = 441, MAX = 9000;                   // 10 ms, 90 s
   const e = new Float32Array(MAX + 1);
   const vol = [15, 15, 15, 15], ayv = [0, 0, 0], kon = new Uint8Array(18);
+  let okiPend = false;
   let bd = 0;
   let t = 0, n = 0, latch = 0;
   const hit = w => { const i = Math.floor(t / BIN); if (i < MAX) { e[i] += w; n++; } };
@@ -102,7 +112,9 @@ function beatsOf(u, start) {
     else if (c === 0x63) t += 882;
     else if (c >= 0x70 && c <= 0x7F) t += (c & 15) + 1;
     else if (c >= 0x80 && c <= 0x8F) t += c & 15;
-    else if ((c === 0x52 || c === 0x58) && u[p + 1] === 0x28 && (u[p + 2] & 0xF0)) hit(1);
+    else if ((c === 0x52 || c === 0x58 || c === 0x55) && u[p + 1] === 0x28 && (u[p + 2] & 0xF0)) hit(1);
+    else if (c === 0x54 && u[p + 1] === 0x08 && (u[p + 2] & 0x78)) hit(1);                            // YM2151 : key-on
+    else if (c === 0xB8 && u[p + 1] === 0x00) { if (okiPend) { hit(1.5); okiPend = false; } else if (u[p + 2] & 0x80) okiPend = true; }   // OKI
     else if (c === 0x59 && u[p + 1] === 0x00 && !(u[p + 2] & 0x80) && (u[p + 2] & 0x3F)) hit(1.5);   // ADPCM-A (Neo-Geo)
     else if (c === 0x58 && u[p + 1] === 0x10 && (u[p + 2] & 0x80)) hit(1);                            // ADPCM-B
     else if (c === 0xE0 || c === 0x95) hit(1.5);
@@ -118,8 +130,8 @@ function beatsOf(u, start) {
     } else if ((c === 0x5A || c === 0x5B || c === 0x5E) && u[p + 1] === 0xBD) {                     // OPL : percussions frappées
       const v = u[p + 2] & 0x1F; if ((u[p + 2] & 0x20) && (v & ~bd)) hit(v & 0x10 ? 1.5 : 1); bd = u[p + 2] & 0x20 ? v : 0;
     }
-    else if ((c === 0xA0 || (c === 0x58 && u[p + 1] < 16)) && (u[p + 1] & 0x7F) === 13) hit(1);   // AY, SSG : enveloppe relancée
-    else if ((c === 0xA0 || (c === 0x58 && u[p + 1] < 16)) && (u[p + 1] & 0x7F) >= 8 && (u[p + 1] & 0x7F) <= 10) {   // volume qui monte
+    else if ((c === 0xA0 || ((c === 0x58 || c === 0x55) && u[p + 1] < 16)) && (u[p + 1] & 0x7F) === 13) hit(1);   // AY, SSG : enveloppe relancée
+    else if ((c === 0xA0 || ((c === 0x58 || c === 0x55) && u[p + 1] < 16)) && (u[p + 1] & 0x7F) >= 8 && (u[p + 1] & 0x7F) <= 10) {   // volume qui monte
       const ch = (u[p + 1] & 0x7F) - 8, v = u[p + 2] & 31; if ((v & 16) || v >= (ayv[ch] & 15) + 4) hit(1); ayv[ch] = v;
     }
     p += k;
@@ -264,6 +276,72 @@ function opnbTrim(u, start, blocks) {
   return out;
 }
 
+/* OKI MSM6295 (arcade) : la ROM (souvent avec des banques : registre 0x0F, ou la carte NMK112) refaite pour le FM-1. On
+ * rejoue les commandes : à chaque départ de phrase, l'adresse de la phrase et de ses échantillons selon les banques du
+ * moment (comme memory_raw_read_byte de MAME) ; chaque phrase jouée (banque comprise) reçoit un nouveau numéro, dans une
+ * table neuve en tête d'une ROM de 256 Ko au plus, suivie de ses échantillons. Les commandes de départ sont réécrites
+ * avec ce numéro ; les écritures de banques, d'horloge et de broche 7 sont retirées. Rend { rom, ids (clé -> numéro), lost }. */
+function okiState() { return { cmd: -1, bank: 0, nmk: 0, nb: [0, 0, 0, 0] }; }
+function okiAddr(st, off) {                       // l'adresse dans la ROM d'origine (okim6295.c : memory_raw_read_byte)
+  if (!st.nmk) return st.bank | off;
+  if (off < 0x400 && (st.nmk & 0x80)) return off | st.nb[(off >> 8) & 3] << 16;
+  return (off & 0xFFFF) | st.nb[(off >> 16) & 3] << 16;
+}
+function okiBank(st, r, d) { if (r === 0x0E) st.nmk = d; else if (r === 0x0F) st.bank = d << 18; else if (r >= 0x10 && r <= 0x13) st.nb[r & 3] = d; }
+function okiKey(st) { return st.nmk ? st.nmk + ':' + st.nb.join(',') : String(st.bank); }
+function okiRebuild(u, start, blocks) {
+  // deux circuits (bit 7 du registre, bit 31 de la taille des blocs) : on garde celui qui lance le plus de phrases
+  // (souvent la musique ; l'autre fait les bruitages)
+  const starts = [0, 0], pend = [false, false];
+  for (let p = start; p < u.length;) {
+    const n = cmdLen(u, p);
+    if (!n || p + n > u.length) break;
+    if (u[p] === 0xB8 && (u[p + 1] & 0x7F) === 0) {
+      const k = u[p + 1] >> 7;
+      if (pend[k]) { if (u[p + 2] >> 4) starts[k]++; pend[k] = false; } else if (u[p + 2] & 0x80) pend[k] = true;
+    }
+    p += n;
+  }
+  const chip = starts[1] > starts[0] ? 1 : 0;
+  const bl = blocks.filter(x => x.type === 0x8B && x.chip === chip);
+  const rd = a => { for (const x of bl) if (a >= x.at && a < x.at + x.data.length) return x.data[a - x.at]; return 0; };
+  const st = okiState(), phrases = new Map();
+  for (let p = start; p < u.length;) {
+    const n = cmdLen(u, p);
+    if (!n || p + n > u.length) break;
+    if (u[p] === 0xB8 && (u[p + 1] >> 7) === chip) {
+      const r = u[p + 1] & 0x7F, d = u[p + 2];
+      if (r === 0) {
+        if (st.cmd >= 0) {
+          if (d >> 4) {
+            const key = okiKey(st) + '/' + st.cmd;
+            if (!phrases.has(key)) {
+              const t = k => rd(okiAddr(st, st.cmd * 8 + k));
+              const s0 = (t(0) << 16 | t(1) << 8 | t(2)) & 0x3FFFF, s1 = (t(3) << 16 | t(4) << 8 | t(5)) & 0x3FFFF;
+              const data = [];
+              if (s0 < s1) for (let a = s0; a <= s1; a++) data.push(rd(okiAddr(st, a)));
+              phrases.set(key, data);
+            }
+          }
+          st.cmd = -1;
+        } else if (d & 0x80) st.cmd = d & 0x7F;
+      } else okiBank(st, r, d);
+    }
+    p += n;
+  }
+  const rom = new Uint8Array(0x40000), ids = new Map();
+  let at = 0x400, id = 1, lost = false;
+  for (const [key, data] of phrases) {
+    if (!data.length) { ids.set(key, 0); continue; }
+    if (id > 127 || at + data.length > 0x40000) { ids.set(key, 0); lost = true; continue; }
+    const e = at + data.length - 1, t = id * 8;
+    rom.set([at >> 16, at >> 8 & 255, at & 255, e >> 16, e >> 8 & 255, e & 255], t);
+    rom.set(data, at);
+    ids.set(key, id++); at += data.length;
+  }
+  return { rom: rom.subarray(0, at), ids, lost: lost || starts[1 - chip] > 0, chip };
+}
+
 async function packVgm(u) {
   const v = parseVgm(u);
   const ver = rd32(u, 8), start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
@@ -281,8 +359,8 @@ async function packVgm(u) {
       if (!nesMem) nesMem = new Uint8Array(0x8000);
       for (let i = 0; i < n - 9; i++) if (at + i >= 0x8000 && at + i <= 0xFFFF) nesMem[at + i - 0x8000] = u[q + 9 + i];
     }
-    if (u[q] === 0x67 && (u[q + 2] === 0x82 || u[q + 2] === 0x83) && n >= 15)   // YM2610 : ROM ADPCM-A, ADPCM-B
-      romBlocks.push({ type: u[q + 2], romSize: rd32(u, q + 7), at: rd32(u, q + 11), data: u.subarray(q + 15, q + n) });
+    if (u[q] === 0x67 && (u[q + 2] === 0x82 || u[q + 2] === 0x83 || u[q + 2] === 0x8B) && n >= 15)   // YM2610 : ADPCM-A, -B ; OKI
+      romBlocks.push({ type: u[q + 2], chip: u[q + 6] >> 7, romSize: rd32(u, q + 7), at: rd32(u, q + 11), data: u.subarray(q + 15, q + n) });
     if (u[q] >= 0x90 && u[q] <= 0x95) dacStream = true;
     q += n;
   }
@@ -302,9 +380,10 @@ async function packVgm(u) {
       pend++;
     }
   };
-  if (v.opl3) a.push(Uint8Array.of(0x5A, 0x01, 0x20));
+  if (v.opl3) a.push(Uint8Array.of(0x5A, 0x01, 0x20));   // OPL3 joué en OPL2 : les formes d'onde permises
   const nb = v.opnb ? opnbTrim(u, start, romBlocks) : null;
-  const shA = new Uint8Array(0x30), shB = new Uint8Array(0x16);   // OPL3 joué en OPL2 : les formes d'onde permises
+  const shA = new Uint8Array(0x30), shB = new Uint8Array(0x16);
+  const ok = v.oki ? okiRebuild(u, start, romBlocks) : null, okSt = okiState();
   while (p < u.length) {
     const n = cmdLen(u, p), c = u[p];
     if (!n) break;
@@ -340,6 +419,20 @@ async function packVgm(u) {
       } else shB[r] = d;
     }
     else if (nb && (c === 0x58 || c === 0x59)) { if (st) flush(out); out.push(u.subarray(p, p + n)); }
+    else if (c === 0x54 && v.opm || c === 0x55 && v.opn) { if (st) flush(out); out.push(u.subarray(p, p + n)); }
+    else if (c === 0xB8 && ok) {                    // OKI : numéros de phrase réécrits, banques retirées
+      const r = u[p + 1] & 0x7F, d = u[p + 2];
+      if (u[p + 1] >> 7 !== ok.chip) { /* l'autre circuit : ignoré */ }
+      else if (r === 0) {
+        if (st) flush(out);
+        if (okSt.cmd >= 0) {
+          const nid = d >> 4 ? ok.ids.get(okiKey(okSt) + '/' + okSt.cmd) || 0 : okSt.cmd;
+          out.push(Uint8Array.of(0xB8, 0x00, 0x80 | nid, 0xB8, 0x00, d));
+          okSt.cmd = -1;
+        } else if (d & 0x80) okSt.cmd = d & 0x7F;   // (la phrase : écrite avec sa voix, ci-dessus)
+        else out.push(u.subarray(p, p + n));
+      } else okiBank(okSt, r, d);
+    }
     else if (v.opl3 && (c === 0x5E || c === 0x5F)) {   // OPL3 -> OPL2 : la première banque de 9 voies
       const [w, lost] = opl3to2(c, u[p + 1], u[p + 2]);
       if (lost) others = true;
@@ -352,10 +445,11 @@ async function packVgm(u) {
   if (st) flush(loop ? b : a);
   const cat = parts => { const t = new Uint8Array(parts.reduce((x, y) => x + y.length, 0)); let o = 0; for (const q of parts) { t.set(q, o); o += q.length; } return t; };
   const end = Uint8Array.of(0x66);
-  const P = v.ym ? cat(pcm) : nb ? cat([nb.a, nb.b]) : nesMem || new Uint8Array(0), A = await deflateRaw(cat([...a, end])), B = loop ? await deflateRaw(cat([...b, end])) : new Uint8Array(0);
+  if (ok && ok.lost) others = true;
+  const P = v.ym ? cat(pcm) : nb ? cat([nb.a, nb.b]) : ok ? ok.rom : nesMem || new Uint8Array(0), A = await deflateRaw(cat([...a, end])), B = loop ? await deflateRaw(cat([...b, end])) : new Uint8Array(0);
   const beat = beatsOf(u, start);
-  const head = new Uint8Array(88), dv = new DataView(head.buffer);
-  head.set([0x52, 0x53, 0x4D, 0x36]);                 // "RSM6"
+  const head = new Uint8Array(104), dv = new DataView(head.buffer);
+  head.set([0x52, 0x53, 0x4D, 0x37]);                 // "RSM7"
   dv.setUint32(4, v.ym, true); dv.setUint32(8, v.sn, true);
   dv.setUint32(12, v.total, true); dv.setUint32(16, loop ? v.loop : 0, true);
   dv.setUint32(20, P.length, true); dv.setUint32(24, A.length, true); dv.setUint32(28, B.length, true);
@@ -364,10 +458,13 @@ async function packVgm(u) {
   dv.setUint32(40, v.gb, true); dv.setUint32(44, v.nes, true);
   dv.setUint32(48, Math.round(beat.bpm * 100), true); dv.setUint32(52, beat.phase, true);   // tempo (BPM x 100), 1er temps
   dv.setUint32(56, v.ay, true); dv.setUint32(60, v.ayType, true);                         // AY-3-8910 / YM2149
-  dv.setUint32(64, v.ym || v.opnb ? 0 : v.opl, true); dv.setUint32(68, v.ym || v.opnb ? 0 : v.oplType, true);  // OPL2 / OPL
+  dv.setUint32(64, v.opl, true); dv.setUint32(68, v.oplType, true);                       // OPL2 / OPL
   dv.setUint32(72, v.opnb, true); dv.setUint32(76, v.opnbType, true); dv.setUint32(80, nb ? nb.a.length : 0, true);   // YM2610
+  dv.setUint32(88, v.opm, true); dv.setUint32(92, v.opn, true);                            // arcade : YM2151, YM2203
+  dv.setUint32(96, v.oki ? (v.oki | (v.okiPin7 ? 0x80000000 : 0)) >>> 0 : 0, true);         // OKI MSM6295
   const blob = cat([head, P, A, B]);
   if (nb) Object.assign(v, { adpcm: nb.a.length + nb.b.length, adpcmRom: nb.romA + (nb.romB || 0) });
+  if (ok) Object.assign(v, { okiRom: ok.rom.length, okiPhrases: ok.ids.size });
   return Object.assign(v, { blob, bpm: beat.bpm, phase: beat.phase, pcmLen: P.length, aLen: A.length, bLen: B.length, dacStream, raw: u.length });
 }
 

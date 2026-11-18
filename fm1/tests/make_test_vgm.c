@@ -12,6 +12,10 @@
  *   opl3 : le même pour un OPL3 (YMF262, 14,3 MHz, banque 0, stéréo) : la page le joue en OPL2, même son
  *   neogeo : un morceau YM2610 (Neo-Geo, 8 MHz) : FM 440 Hz, SSG 1 kHz, ADPCM-A (500 Hz, à 1 Mo dans une ROM de 2 Mo
  *            pleine d'octets inutiles), ADPCM-B (926 Hz, en boucle), puis le tout (boucle), 6 s
+ *   arcade : un morceau CPS1 (YM2151 à 3,58 MHz, OKI MSM6295 à 1 MHz, ROM de 256 Ko avec sa table des phrases) : FM
+ *            440 Hz, phrase 1 (sinus 500 Hz), phrase 5 (bruit, au loin dans la ROM), puis FM + phrase 1 (boucle), 4 s ;
+ *            arcadeb : le même, la ROM en deux banques de 256 Ko (registre 0x0F), la phrase 5 dans la seconde
+ *   opn : un morceau YM2203 (4 MHz) : FM 440 Hz, SSG 1 kHz, puis les deux (boucle), 4 s
  *   nes : un morceau NES (2 carrées dont une qui balaye, triangle, bruit, DPCM), 6 s, boucle sur les 2 dernières
  * Déroulé (secondes) : 0-2 accord FM, 2-3 PSG seul (3 voies), 3-4 bruit, 4-5 DAC (une rampe), puis boucle sur le PSG. */
 #include <stdio.h>
@@ -233,6 +237,97 @@ static int neogeo(const char *path)
     return finish(path, "Neo-Geo", loop_at, 88200);
 }
 
+/* arcade : YM2151 (commande 0x54), OKI MSM6295 (0xB8 ; bloc de données 0x8B) */
+static void opm(uint32_t reg, uint32_t val) { b(0x54); b(reg); b(val); }
+static void okw(uint32_t reg, uint32_t val) { b(0xB8); b(reg); b(val); }
+static uint32_t oki_enc(uint8_t *out, uint32_t ns, double hz, double amp, int noise)   /* codeur ADPCM OKI (glouton) */
+{
+    static const int st[49] = {16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130,
+        143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282,
+        1411, 1552};
+    static const int sh[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
+    int sig = -2, k = 0, nib, best, bv;
+    uint32_t i, seed = 7;
+    for (i = 0; i < ns; i++) {
+        int x;
+        if (noise) { seed = seed * 1103515245u + 12345u; x = (int)((seed >> 16 & 2047) - 1024) * (int)(ns - i) / (int)ns; }
+        else x = (int)(amp * sin(2 * M_PI * hz * i / 7575.76));
+        best = 0; bv = 1 << 30;
+        for (nib = 0; nib < 16; nib++) {
+            int sv = st[k], d = sv / 8 + (nib & 4 ? sv : 0) + (nib & 2 ? sv / 2 : 0) + (nib & 1 ? sv / 4 : 0), a = sig + (nib & 8 ? -d : d), e;
+            if (a > 2047) a = 2047;
+            if (a < -2048) a = -2048;
+            e = a > x ? a - x : x - a; if (e < bv) { bv = e; best = nib; }
+        }
+        { int sv = st[k], d = sv / 8 + (best & 4 ? sv : 0) + (best & 2 ? sv / 2 : 0) + (best & 1 ? sv / 4 : 0); sig += best & 8 ? -d : d; }
+        if (sig > 2047) sig = 2047;
+        if (sig < -2048) sig = -2048;
+        k += sh[best & 7]; if (k < 0) k = 0; if (k > 48) k = 48;
+        if (i & 1) out[i >> 1] |= (uint8_t)best; else out[i >> 1] = (uint8_t)(best << 4);
+    }
+    return (ns + 1) / 2;
+}
+static void oki_phrase(uint8_t *rom, uint32_t ph, uint32_t start, uint32_t len)
+{
+    uint32_t e = start + len - 1, t = ph * 8;
+    rom[t] = start >> 16 & 3; rom[t + 1] = start >> 8 & 255; rom[t + 2] = start & 255;
+    rom[t + 3] = e >> 16 & 3; rom[t + 4] = e >> 8 & 255; rom[t + 5] = e & 255;
+}
+static int arcade(const char *path, int banked)
+{
+    static uint8_t rom[0x80000];
+    uint32_t i, loop_at, l1, l5;
+    n = 0x100; w32(0x08, 0x171); w32(0x34, 0x100 - 0x34); w32(0x30, 3579545); w32(0x98, 1000000u | 0x80000000u);
+    for (i = 0x400; i < sizeof rom; i++) rom[i] = (uint8_t)(i * 73 + (i >> 7));      /* des octets que rien ne joue */
+    for (i = 0; i < 0x400; i++) rom[i] = 0;
+    l1 = oki_enc(rom + 0x400, 3788, 7575.76 / 15, 1500, 0); oki_phrase(rom, 1, 0x400, l1);
+    oki_phrase(rom, 2, 0x1000, 0xF000);                                              /* une phrase jamais jouée */
+    if (banked) { memcpy(rom + 0x40000, rom, 0x400); for (i = 0; i < 8; i++) rom[0x40000 + 8 + i] = 0; }
+    l5 = oki_enc(rom + (banked ? 0x40000 : 0) + 0x20000, 1515, 0, 0, 1); oki_phrase(rom + (banked ? 0x40000 : 0), 5, 0x20000, l5);
+    b(0x67); b(0x66); b(0x8B); w32(n, (banked ? 0x80000 : 0x40000) + 8); n += 4;
+    w32(n, banked ? 0x80000 : 0x40000); n += 4; w32(n, 0); n += 4;
+    for (i = 0; i < (banked ? 0x80000u : 0x40000u); i++) b(rom[i]);
+    /* YM2151 : voie 0, un seul opérateur (C2) qui sonne, 440 Hz */
+    opm(0x20, 0xC7); opm(0x28, 0x4A); opm(0x30, 0);
+    for (i = 0; i < 4; i++) {
+        uint32_t sl = i * 8;
+        opm(0x40 + sl, 1); opm(0x60 + sl, i == 3 ? 0x08 : 0x7F); opm(0x80 + sl, 31); opm(0xA0 + sl, 0); opm(0xC0 + sl, 0); opm(0xE0 + sl, 0x0F);
+    }
+    opm(0x08, 0x78); wait(44100);
+    opm(0x08, 0x00);
+    okw(0, 0x81); okw(0, 0x10); wait(22050);                                         /* phrase 1, voix 1 */
+    if (banked) okw(0x0F, 1);
+    okw(0, 0x85); okw(0, 0x20); wait(22050);                                         /* phrase 5, voix 2 */
+    if (banked) okw(0x0F, 0);
+    loop_at = n;
+    opm(0x08, 0x78);
+    for (i = 0; i < 4; i++) { okw(0, 0x08); okw(0, 0x81); okw(0, 0x10); wait(22050); }
+    opm(0x08, 0x00);
+    return finish(path, banked ? "arcade, banques" : "arcade", loop_at, 88200);
+}
+static int ym2203(const char *path)
+{
+    uint32_t i, loop_at;
+    n = 0x100; w32(0x08, 0x171); w32(0x34, 0x100 - 0x34); w32(0x44, 4000000);
+    b(0x55); b(0x27); b(0);
+    b(0x55); b(0xB0); b(7);
+    for (i = 0; i < 4; i++) {
+        uint32_t s2 = (i == 1 ? 8 : i == 2 ? 4 : i == 3 ? 12 : 0);
+        b(0x55); b(0x30 + s2); b(1); b(0x55); b(0x40 + s2); b(i == 3 ? 0x08 : 0x7F); b(0x55); b(0x50 + s2); b(0x1F);
+        b(0x55); b(0x60 + s2); b(0); b(0x55); b(0x70 + s2); b(0); b(0x55); b(0x80 + s2); b(0x0F); b(0x55); b(0x90 + s2); b(0);
+    }
+    b(0x55); b(0xA4); b(4 << 3 | 1038 >> 8); b(0x55); b(0xA0); b(1038 & 255); b(0x55); b(0x28); b(0xF0);
+    wait(44100);
+    b(0x55); b(0x28); b(0x00);
+    b(0x55); b(0x00); b(125); b(0x55); b(0x01); b(0); b(0x55); b(0x08); b(15); b(0x55); b(0x07); b(0x3E);   /* SSG A : 1 kHz */
+    wait(44100);
+    loop_at = n;
+    b(0x55); b(0x28); b(0xF0); b(0x55); b(0x08); b(12);
+    wait(88200);
+    b(0x55); b(0x28); b(0x00); b(0x55); b(0x08); b(0);
+    return finish(path, "YM2203", loop_at, 88200);
+}
+
 static int nes(const char *path)
 {
     uint32_t i, at, loop_at;
@@ -276,6 +371,9 @@ int main(int argc, char **argv)
     if (argc > 2 && !strcmp(argv[2], "ay")) return ym2149(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "opl")) return opl2(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "neogeo")) return neogeo(argv[1]);
+    if (argc > 2 && !strcmp(argv[2], "arcade")) return arcade(argv[1], 0);
+    if (argc > 2 && !strcmp(argv[2], "arcadeb")) return arcade(argv[1], 1);
+    if (argc > 2 && !strcmp(argv[2], "opn")) return ym2203(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "opl3")) { opl3_mode = 1; return opl2(argv[1]); }
     if (argc > 2 && !strcmp(argv[2], "gg")) {              /* gg : Game Gear (SN76489 seul, stéréo 0x4F), 4 s */
         w32(0x08, 0x151); w32(0x0C, 3579545); w32(0x34, 0x40 - 0x34);
