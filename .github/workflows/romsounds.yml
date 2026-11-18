@@ -123,6 +123,11 @@ jobs:
           node ../tests/wav_check.js build/host/romsounds.wav 0.2-0.9:~440 1.1-1.9:1000 2.1-2.9:1000 3.1-4.9:1000 5.2-5.9:1000
           node ../tests/preview_test.js build/opl.rsm 6 build/pv_opl.wav
           node ../tests/wav_compare.js build/pv_opl.wav build/host/romsounds.wav 1 6 1
+          # OPL3 (Sound Blaster 16) : la page le réécrit pour l'OPL2 (banque 0, sans stéréo) : même son que le morceau OPL2
+          cp build/host/romsounds.wav build/opl-host.wav
+          build/make_test_vgm build/opl3.vgm opl3 > /dev/null && node ../tests/rx_test.js build/opl3.vgm build/x.syx build/opl3.rsm
+          ROMSOUNDS_RSM=build/opl3.rsm sh tests/run_host.sh build/f6.txt > /dev/null
+          node ../tests/wav_compare.js build/host/romsounds.wav build/opl-host.wav 1 6 0.5
           # Amiga : un module de test (tests/make_test_mod.js) préparé par la page, joué sur PC (hauteurs, coupures, glissando,
           # retour au début) et dans la page (même son)
           node ../tests/make_test_mod.js build/test.mod

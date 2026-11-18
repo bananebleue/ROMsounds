@@ -212,11 +212,11 @@
           <a href="https://vgmrips.net/packs/system/nintendo/game-boy" rel="noopener" target="_blank">Game Boy</a>,
           <a href="https://vgmrips.net/packs/system/nintendo/nintendo-entertainment-system" rel="noopener" target="_blank">NES</a>.</li>
         <li><a href="https://www.smspower.org/Music/" rel="noopener" target="_blank">SMS Power</a> : Master System et Game Gear.</li>
-        <li>PC (AdLib, Sound Blaster) : les packs <a href="https://vgmrips.net/packs/chip/ym3812" rel="noopener" target="_blank">YM3812 de VGMRips</a> (PC/AT, et des bornes d’arcade comme Truxton ou Snow Bros). Les packs « Sound Blaster 16 » (YMF262, OPL3) ne sont pas encore lus.</li>
+        <li>PC (AdLib, Sound Blaster) : les packs <a href="https://vgmrips.net/packs/chip/ym3812" rel="noopener" target="_blank">YM3812 de VGMRips</a> (PC/AT, et des bornes d’arcade comme Truxton ou Snow Bros). Les packs « Sound Blaster 16 » (YMF262, OPL3) sont joués en OPL2 : les 9 premières voies, sans la stéréo (la plupart des jeux DOS n’utilisent rien de plus).</li>
         <li>Amiga : les modules .mod, par exemple sur <a href="https://modarchive.org/" rel="noopener" target="_blank">The Mod Archive</a> (ProTracker « M.K. », 4 à 8 voies ; pas encore les formats .xm, .s3m, .it).</li>
         <li>Atari ST : les fichiers .ym, par exemple ceux du <a href="https://github.com/nguillaumin/ym-jukebox" rel="noopener" target="_blank">YM Jukebox</a> (archives BrainBug et Modland). Les fichiers SNDH de l’<a href="https://sndh.atari.org/" rel="noopener" target="_blank">archive SNDH</a> ne sont pas encore lus.</li>
       </ul>
-      <p class="sub" style="margin:0">ROMsounds joue les puces YM2612, SN76489 (PSG Sega), Game Boy DMG, NES APU, AY-3-8910 / YM2149 (Atari ST, Amstrad CPC, ZX Spectrum) et YM3812 / YM3526 (AdLib). Les packs « FDS » ou avec des puces de cartouche en plus (VRC6, N163…) jouent sans ces voies-là.</p>
+      <p class="sub" style="margin:0">ROMsounds joue les puces YM2612, SN76489 (PSG Sega), Game Boy DMG, NES APU, AY-3-8910 / YM2149 (Atari ST, Amstrad CPC, ZX Spectrum) et YM3812 / YM3526 (AdLib ; l’OPL3 joué en OPL2). Les packs « FDS » ou avec des puces de cartouche en plus (VRC6, N163…) jouent sans ces voies-là.</p>
     </details>
   </section>
 
@@ -545,7 +545,7 @@ async function showVgm(u, name) {
     const v = RSVGM.isMod(raw, name) ? RSVGM.packMod(raw, name) : await packVgm(raw);   // Amiga (.mod) : le module tel quel
     const f = { name };
     const lines = [(v.title || f.name) + (v.game ? ' — ' + v.game : ''), (v.system ? v.system + ' · ' : '') + (v.author || '')];
-    lines.push(v.isMod ? 'Paula (Amiga) : module ' + v.nch + ' voies' : 'Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489', v.gb && 'Game Boy', v.nes && 'NES 2A03', v.ay && (v.ayType & 0xF0 ? 'YM2149' : 'AY-3-8910'), v.opl && (v.oplType === 2 ? 'YM3526' : 'YM3812 (AdLib)')].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
+    lines.push(v.isMod ? 'Paula (Amiga) : module ' + v.nch + ' voies' : 'Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489', v.gb && 'Game Boy', v.nes && 'NES 2A03', v.ay && (v.ayType & 0xF0 ? 'YM2149' : 'AY-3-8910'), v.opl && (v.opl3 ? 'YMF262 (OPL3, joué en OPL2)' : v.oplType === 2 ? 'YM3526' : 'YM3812 (AdLib)')].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
     lines.push('Durée : ' + mmss(v.total / 44100) + (v.loop ? ' (boucle de ' + mmss(v.loop / 44100) + ')' : ''));
     lines.push('Pour le FM-1 : ' + kb(v.blob.length) + ' (fichier ouvert : ' + kb(v.raw) + ' ; échantillons ' + kb(v.pcmLen) + ', musique compressée ' + kb(v.aLen + v.bLen) + ')');
     if (v.dacStream) lines.push('Flux DAC (VGM 1.60) : convertis par la page pour le FM-1.');

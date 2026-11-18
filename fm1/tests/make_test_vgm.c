@@ -9,6 +9,7 @@
  *   gb : un morceau Game Boy (4 voies, enveloppe, balayage, longueur, panoramique), 6 s, boucle sur les 2 dernières
  *   ay : un morceau YM2149 (Atari ST, 2 MHz) : voie A, voie B en enveloppe, bruit sur C, puis les trois (boucle), 5 s
  *   opl : un morceau OPL2 / AdLib (YM3812, 3,58 MHz) : sinus 440 Hz, FM 880 Hz, percussions, puis un accord (boucle), 5 s
+ *   opl3 : le même pour un OPL3 (YMF262, 14,3 MHz, banque 0, stéréo) : la page le joue en OPL2, même son
  *   nes : un morceau NES (2 carrées dont une qui balaye, triangle, bruit, DPCM), 6 s, boucle sur les 2 dernières
  * Déroulé (secondes) : 0-2 accord FM, 2-3 PSG seul (3 voies), 3-4 bruit, 4-5 DAC (une rampe), puis boucle sur le PSG. */
 #include <stdio.h>
@@ -95,7 +96,12 @@ static int ym2149(const char *path)
     return finish(path, "YM2149", loop_at, 88200);
 }
 
-static void oplw(uint32_t reg, uint32_t val) { b(0x5A); b(reg); b(val); }
+static int opl3_mode;                                     /* opl3 : les mêmes écritures, pour un YMF262 (banque 0) */
+static void oplw(uint32_t reg, uint32_t val)
+{
+    if (opl3_mode && reg >= 0xC0 && reg <= 0xC8) val |= 0x30;   /* (OPL3 : gauche + droite) */
+    b(opl3_mode ? 0x5E : 0x5A); b(reg); b(val);
+}
 static void opl_voice(uint32_t ch, uint32_t mod_tl, uint32_t fnum, uint32_t blk)
 {
     static const uint8_t OFS[9] = {0, 1, 2, 8, 9, 10, 16, 17, 18};
@@ -110,7 +116,9 @@ static void opl_voice(uint32_t ch, uint32_t mod_tl, uint32_t fnum, uint32_t blk)
 static int opl2(const char *path)
 {
     uint32_t loop_at;
-    n = 0x80; w32(0x08, 0x151); w32(0x34, 0x80 - 0x34); w32(0x50, 3579545);
+    n = 0x80; w32(0x08, 0x151); w32(0x34, 0x80 - 0x34);
+    if (opl3_mode) { w32(0x5C, 14318180); b(0x5F); b(0x05); b(0x01); }   /* OPL3 : mode « NEW » */
+    else w32(0x50, 3579545);
     oplw(0x01, 0x20);                                     /* formes d'onde permises */
     opl_voice(0, 0x3F, 580, 4); wait(44100);              /* sinus : 440 Hz (modulateur muet) */
     oplw(0xB0, 0x00);
@@ -170,6 +178,7 @@ int main(int argc, char **argv)
     if (argc > 2 && !strcmp(argv[2], "nes")) return nes(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "ay")) return ym2149(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "opl")) return opl2(argv[1]);
+    if (argc > 2 && !strcmp(argv[2], "opl3")) { opl3_mode = 1; return opl2(argv[1]); }
     if (argc > 2 && !strcmp(argv[2], "gg")) {              /* gg : Game Gear (SN76489 seul, stéréo 0x4F), 4 s */
         w32(0x08, 0x151); w32(0x0C, 3579545); w32(0x34, 0x40 - 0x34);
         buf[0x28] = 0x09; buf[0x29] = 0x00; buf[0x2A] = 16;   /* bruit Sega */

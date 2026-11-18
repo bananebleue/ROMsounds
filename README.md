@@ -20,8 +20,9 @@ Le FM-1 le joue aussitôt et le **garde en mémoire flash** (bibliothèque d'env
 - OPL2 / OPL (YM3812, YM3526 : AdLib, Sound Blaster, arcade Toaplan…) : `fmopl.c` de MAME (via libvgm, GPL-2.0+,
   `firmware/ext/fmopl`, tables précalculées par `tools/gen_fmopl_tables.c`), à sa fréquence native (horloge / 72) ;
   9 voies + percussions ; ~1,3 fois le coût du YM2612 sur PC, d'où la hauteur limitée à +1 demi-ton. Niveaux des
-  voies FM à ~10 % du cœur AdLibEmu de libvgm (les percussions sonnent plus fort avec le cœur MAME). Pas encore :
-  l'OPL3 (YMF262, Sound Blaster 16), deux puces OPL, le MT-32 (MIDI Roland : bien trop lourd pour le FM-1).
+  voies FM à ~10 % du cœur AdLibEmu de libvgm (les percussions sonnent plus fort avec le cœur MAME). OPL3 (YMF262, Sound Blaster 16) : la page
+  le réécrit pour l'OPL2 (banque 0, sans stéréo, formes d'onde 0-3 ; avertissement si la banque 1 ou les voix à
+  4 opérateurs servent). Pas encore : deux puces OPL, le MT-32 (MIDI Roland : bien trop lourd pour le FM-1).
 - Game Boy (`gb_apu.h`) et NES (`nes_apu.h`, DMC compris) : écrits pour ROMsounds ; niveaux à 1 % de libvgm sauf le
   bruit et le DMC de la NES (à ~1 dB). Pas encore : le FDS, les puces d'extension des cartouches (VRC6, N163…),
   les échantillons DMC réécrits pendant le morceau (la page garde la dernière version de chaque adresse).

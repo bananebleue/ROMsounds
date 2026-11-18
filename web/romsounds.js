@@ -19,7 +19,7 @@ const VGM_ERR = { 0x41: 'fichier trop gros pour le FM-1', 0x42: 'données hors d
   0x47: 'attribution refusée par le FM-1', 0x48: 'le FM-1 n’a pas pu l’enregistrer (mémoire flash)' };
 const LIB_MAX = 40;                      // morceaux au plus dans la bibliothèque du FM-1 (firmware : LIB_MAX)
 // horloges des autres puces dans l'en-tête (spécification VGM 1.71)
-const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x4C, 0x58, 0x5C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
+const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x4C, 0x58, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
 const rd32 = (u, i) => (u[i] | u[i + 1] << 8 | u[i + 2] << 16 | u[i + 3] << 24) >>> 0;
 // l'écran du FM-1 n'a que l'ASCII : accents retirés, le reste remplacé par « ? »
 const ascii = t => (t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x20-\x7E]/g, '?').trim().slice(0, 28);
@@ -40,7 +40,8 @@ function parseVgm(u) {
   const fds = head >= 0x88 && (rd32(u, 0x84) & 0x80000000) !== 0;
   const ay = head >= 0x78 ? rd32(u, 0x74) & 0x3FFFFFFF : 0, ayType = ay && head >= 0x79 ? u[0x78] : 0;
   const opl2 = head >= 0x54 ? rd32(u, 0x50) & 0x3FFFFFFF : 0, opl1 = head >= 0x58 ? rd32(u, 0x54) & 0x3FFFFFFF : 0;
-  const opl = opl2 || opl1, oplType = opl2 ? 1 : opl1 ? 2 : 0;   // OPL2 (AdLib, Sound Blaster) ou OPL
+  const opl3 = !opl2 && !opl1 && head >= 0x60 ? rd32(u, 0x5C) & 0x3FFFFFFF : 0;   // OPL3 (Sound Blaster 16) : joué en OPL2
+  const opl = opl2 || opl1 || Math.round(opl3 / 4), oplType = opl2 || opl3 ? 1 : opl1 ? 2 : 0;
   const start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
   const gd3 = rd32(u, 0x14) ? 0x14 + rd32(u, 0x14) : 0;
   const tags = [];
@@ -52,14 +53,15 @@ function parseVgm(u) {
   let others = false;
   for (const o of OTHER_CHIPS) if (o + 4 <= Math.min(start, 0x100) && (rd32(u, o) & 0x3FFFFFFF)) others = true;
   if (ver >= 0x110 && rd32(u, 0x10)) others = true;
-  if ((head >= 0x54 && rd32(u, 0x50) & 0x40000000) || (opl2 && opl1)) others = true;   // (une seule puce OPL)
+  if ((head >= 0x54 && rd32(u, 0x50) & 0x40000000) || (opl3 && rd32(u, 0x5C) & 0x40000000) || (opl2 && opl1)) others = true;   // (une seule puce OPL)
+  if ((opl2 || opl1) && head >= 0x60 && rd32(u, 0x5C) & 0x3FFFFFFF) others = true;
   const body = u.subarray(0, gd3 > start ? gd3 : u.length);
   if (!ym && !sn && !gb && !nes && !ay && !opl) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES, AY / YM2149, AdLib)');
   if (ym && opl) others = true;                  // (le FM-1 ne joue qu'une puce FM : le YM2612)
   if (fds) others = true;                        // (le FDS de la NES : pas encore)
-  return { body, ym, sn, gb, nes, ay, ayType, opl, oplType, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
+  return { body, ym, sn, gb, nes, ay, ayType, opl, oplType, opl3, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
            title: ascii(tags[0] || tags[1]), game: ascii(tags[2] || tags[3]), system: tags[4] || '', author: tags[6] || '',
-           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : opl ? 'PC (AdLib)' : gb ? 'Game Boy' : nes ? 'NES' : ay ? (ayType & 0xF0 ? 'YM2149' : 'AY-3-8910') : 'SN76489') };
+           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : opl3 ? 'PC (Sound Blaster 16)' : opl ? 'PC (AdLib)' : gb ? 'Game Boy' : nes ? 'NES' : ay ? (ayType & 0xF0 ? 'YM2149' : 'AY-3-8910') : 'SN76489') };
 }
 
 // longueur d'une commande VGM à la position p (spécification 1.71) ; 0 : fin
@@ -85,7 +87,7 @@ const KEEP = c => c === 0xA0 || c === 0x5A || c === 0x5B || c === 0xB3 || c === 
 function beatsOf(u, start) {
   const BIN = 441, MAX = 9000;                   // 10 ms, 90 s
   const e = new Float32Array(MAX + 1);
-  const vol = [15, 15, 15, 15], ayv = [0, 0, 0], kon = new Uint8Array(9);
+  const vol = [15, 15, 15, 15], ayv = [0, 0, 0], kon = new Uint8Array(18);
   let bd = 0;
   let t = 0, n = 0, latch = 0;
   const hit = w => { const i = Math.floor(t / BIN); if (i < MAX) { e[i] += w; n++; } };
@@ -106,9 +108,9 @@ function beatsOf(u, start) {
     } else if (c === 0xB3 && (u[p + 1] === 0x04 || u[p + 1] === 0x09 || u[p + 1] === 0x0E || u[p + 1] === 0x13) && (u[p + 2] & 0x80)) hit(u[p + 1] === 0x13 ? 1.5 : 1);
     else if (c === 0xB4 && (u[p + 1] === 0x03 || u[p + 1] === 0x07 || u[p + 1] === 0x0B || u[p + 1] === 0x0F)) hit(u[p + 1] === 0x0F ? 1.5 : 1);
     else if (c === 0xB4 && u[p + 1] === 0x15 && (u[p + 2] & 0x10)) hit(1.5);   // DPCM
-    else if ((c === 0x5A || c === 0x5B) && u[p + 1] >= 0xB0 && u[p + 1] <= 0xB8) {   // OPL : key-on
-      const ch = u[p + 1] - 0xB0, on = u[p + 2] & 0x20; if (on && !kon[ch]) hit(1); kon[ch] = on;
-    } else if ((c === 0x5A || c === 0x5B) && u[p + 1] === 0xBD) {                     // OPL : percussions frappées
+    else if ((c === 0x5A || c === 0x5B || c === 0x5E || c === 0x5F) && u[p + 1] >= 0xB0 && u[p + 1] <= 0xB8) {   // OPL : key-on
+      const ch = u[p + 1] - 0xB0 + (c === 0x5F ? 9 : 0), on = u[p + 2] & 0x20; if (on && !kon[ch]) hit(1); kon[ch] = on;
+    } else if ((c === 0x5A || c === 0x5B || c === 0x5E) && u[p + 1] === 0xBD) {                     // OPL : percussions frappées
       const v = u[p + 2] & 0x1F; if ((u[p + 2] & 0x20) && (v & ~bd)) hit(v & 0x10 ? 1.5 : 1); bd = u[p + 2] & 0x20 ? v : 0;
     }
     else if (c === 0xA0 && (u[p + 1] & 0x7F) === 13) hit(1);                     // AY : enveloppe relancée
@@ -202,6 +204,17 @@ function streamsOf(u) {
 }
 
 /** Prépare le morceau pour le FM-1 : { blob, pcm, a, b, dacStream } (blob : ce qui est envoyé) */
+/* Une écriture de l'OPL3 (YMF262 : 0x5E banque 0, 0x5F banque 1) pour l'OPL2 du FM-1 : la banque 0 telle quelle (sans
+ * la stéréo ; formes d'onde 4-7 ramenées à 0-3), la banque 1 laissée de côté. Rend [commande 0x5A ou null, perdu] :
+ * perdu quand une voix de la banque 1, une voix à 4 opérateurs ou une forme d'onde 4-7 est en jeu (avertissement). */
+function opl3to2(c, r, d) {
+  if (c === 0x5F) return [null, r === 0x04 ? (d & 0x3F) !== 0 : r >= 0xB0 && r <= 0xB8 && (d & 0x20) !== 0];
+  if (r === 0x01) return [Uint8Array.of(0x5A, 0x01, d | 0x20), false];
+  if (r >= 0xE0 && r <= 0xF5) return [Uint8Array.of(0x5A, r, d & 3), (d & 4) !== 0];
+  if (r >= 0xC0 && r <= 0xC8) return [Uint8Array.of(0x5A, r, d & 0x0F), false];
+  return [Uint8Array.of(0x5A, r, d), false];
+}
+
 async function packVgm(u) {
   const v = parseVgm(u);
   const ver = rd32(u, 8), start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
@@ -237,6 +250,7 @@ async function packVgm(u) {
       pend++;
     }
   };
+  if (v.opl3) a.push(Uint8Array.of(0x5A, 0x01, 0x20));   // OPL3 joué en OPL2 : les formes d'onde permises
   while (p < u.length) {
     const n = cmdLen(u, p), c = u[p];
     if (!n) break;
@@ -248,6 +262,11 @@ async function packVgm(u) {
     else if (st && (c === 0x61 || c === 0x62 || c === 0x63 || (c >= 0x70 && c <= 0x7F))) {
       wait(c === 0x61 ? u[p + 1] | u[p + 2] << 8 : c === 0x62 ? 735 : c === 0x63 ? 882 : (c & 15) + 1, out);
     } else if (st && c >= 0x80 && c <= 0x8F) { flush(out); out.push(Uint8Array.of(0x80)); wait(c & 15, out); }
+    else if (v.opl3 && (c === 0x5E || c === 0x5F)) {   // OPL3 -> OPL2 : la première banque de 9 voies
+      const [w, lost] = opl3to2(c, u[p + 1], u[p + 2]);
+      if (lost) others = true;
+      if (w) { if (st) flush(out); out.push(w); }
+    }
     else if (KEEP(c)) { if (st) flush(out); out.push(u.subarray(p, p + n)); }
     else others = true;
     p += n;
