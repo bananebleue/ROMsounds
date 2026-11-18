@@ -274,13 +274,14 @@ typedef struct fm_opl_f
 
 
 /* mapping of register number (offset) to slot number used by the emulator */
-static const int slot_array[32]=
+/* ROMsounds : calculé plutôt que lu dans la table slot_array de MAME (0, 2, 4, 1, 3, 5, -1, -1, 6, 8, ...) : sinon le
+ * compilateur du FM-1 teste « -1 » avec un masque 0xFFC0C0C0, que le contrôle du build prend pour une adresse en ROM */
+static int slot_of(UINT32 r)
 {
-	 0, 2, 4, 1, 3, 5,-1,-1,
-	 6, 8,10, 7, 9,11,-1,-1,
-	12,14,16,13,15,17,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1
-};
+	UINT32 g = (r >> 3) & 3, k = r & 7;
+	if (g > 2 || k > 5) return -1;
+	return (int)(6 * g + (k < 3 ? 2 * k : 2 * (k - 3) + 1));
+}
 
 /* key scale level */
 /* table is 3dB/octave , DV converts this into 6dB/octave */
@@ -1547,22 +1548,22 @@ static void OPLWriteReg(FM_OPL *OPL, UINT8 r, UINT8 v)
 		}
 		break;
 	case 0x20:  /* am ON, vib ON, ksr, eg_type, mul */
-		slot = slot_array[r&0x1f];
+		slot = slot_of(r);
 		if(slot < 0) return;
 		set_mul(OPL,slot,v);
 		break;
 	case 0x40:
-		slot = slot_array[r&0x1f];
+		slot = slot_of(r);
 		if(slot < 0) return;
 		set_ksl_tl(OPL,slot,v);
 		break;
 	case 0x60:
-		slot = slot_array[r&0x1f];
+		slot = slot_of(r);
 		if(slot < 0) return;
 		set_ar_dr(OPL,slot,v);
 		break;
 	case 0x80:
-		slot = slot_array[r&0x1f];
+		slot = slot_of(r);
 		if(slot < 0) return;
 		set_sl_rr(OPL,slot,v);
 		break;
@@ -1680,7 +1681,7 @@ static void OPLWriteReg(FM_OPL *OPL, UINT8 r, UINT8 v)
 		/* simply ignore write to the waveform select register if selecting not enabled in test register */
 		if(OPL->wavesel)
 		{
-			slot = slot_array[r&0x1f];
+			slot = slot_of(r);
 			if(slot < 0) return;
 			CH = &OPL->P_CH[slot/2];
 
