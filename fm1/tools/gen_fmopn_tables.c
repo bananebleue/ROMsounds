@@ -10,6 +10,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 #include "../firmware/ext/fmopn/fmopn.c"
+#include "../firmware/ext/fmopn/ymdeltat.c"          /* (le YM2610 en a besoin pour se lier) */
 
 static void dump(const char *type, const char *name, const char *len, const long *v, int n)
 {
