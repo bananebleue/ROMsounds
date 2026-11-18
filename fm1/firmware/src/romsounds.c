@@ -36,6 +36,7 @@ static void app_sysex(const uint8_t *p, uint32_t n);
 #include "gb_apu.h"
 #include "nes_apu.h"
 #include "ay_apu.h"
+#include "mod.h"
 #include "fx.h"
 #include "vgm.h"
 #include "rx.h"
@@ -107,6 +108,7 @@ static psg_t psg;
 static gb_t gb;
 static nes_t nes;
 static ay_t ay;
+static mod_t mod;
 
 static void vgm_ym(uint32_t port, uint32_t reg, uint32_t val)
 {
@@ -165,6 +167,16 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
     const uint8_t *m = vgm_buf;
     uint32_t pcm, a, b;
     uint32_t hl;
+    song.is_mod = 0;
+    if (size >= 64u && m[0] == 'R' && m[1] == 'S' && m[2] == 'M' && m[3] == 'D') {   /* RSMD : un module Amiga */
+        uint32_t i;
+        for (i = 0; i < sizeof song; i++) ((uint8_t *)&song)[i] = 0;
+        if (rd32(m + 4) != 1u || rd32(m + 8) + 64u != size || mod_load(&mod, m + 64, size - 64u)) return 4;
+        song.is_mod = 1; song.total = rd32(m + 12); song.loop_samples = rd32(m + 16);
+        song.bpm100 = rd32(m + 48); song.beat0 = rd32(m + 52);
+        song_size = size;
+        return 0;
+    }
     if (size < 40u || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] < '1' || m[3] > '4')) return 4;
     hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : m[3] == '3' ? 56u : 64u;   /* RSM1 : 40 ; RSM2 (+ Game Boy, NES) : 48 ;
                                                  * RSM3 (+ tempo) : 56 ; RSM4 (+ AY / YM2149) : 64 */
@@ -198,6 +210,7 @@ static uint32_t mbuf_n;
 static uint32_t voices(uint32_t *ym_at, uint32_t *psg_at, uint32_t *gb_at, uint32_t *nes_at)
 {
     uint32_t n = 0;
+    if (song.is_mod) { *ym_at = *psg_at = *gb_at = *nes_at = 0; return mod.nch; }   /* module : ses voies */
     *ym_at = n; if (song.ym_clock) n += 7u;     /* FM 1-6, DAC */
     *psg_at = n; if (song.psg_clock) n += 4u;
     *gb_at = n; if (song.gb_clock) n += 4u;
@@ -209,6 +222,7 @@ static void fx_apply_mute(void)
 {
     uint32_t y, p, g, a, tot = voices(&y, &p, &g, &a);
     ay.mute = (uint8_t)(song.ay_clock ? mute >> (tot - 4u) & 15u : 0u);
+    mod.mute = song.is_mod ? mute & 0xFFu : 0u;
     if (ym) ym2612_set_mute_mask(ym, song.ym_clock ? mute >> y & 0x7Fu : 0u);
     psg.mute = (uint8_t)(song.psg_clock ? mute >> p & 15u : 0u);
     gb.mute = (uint8_t)(song.gb_clock ? mute >> g & 15u : 0u);
@@ -222,6 +236,7 @@ static void fx_apply_rate(void)                  /* la hauteur : les puces vont 
     gb.step_q16 = mul_q16(gb_step0, r);
     nes.step_q16 = mul_q16(nes_step0, r);
     ay.step_q16 = mul_q16(ay_step0, r);
+    mod.rate_q16 = r;
 }
 
 static void song_start(void)
@@ -235,6 +250,7 @@ static void song_start(void)
     gb_init(&gb, song.gb_clock);
     nes_init(&nes, song.nes_clock, !song.ym_clock && song.pcm_len >= 0x8000u ? song.pcm : 0);   /* (NES : sa mémoire) */
     ay_init(&ay, song.ay_clock, (song.ay_type & 0xF0u) != 0u);
+    if (song.is_mod) mod_load(&mod, vgm_buf + 64, song_size - 64u);   /* (depuis le début) */
     ym_step0 = (rate << 16) / 44100u;           /* (rate < 65536 : pas de débordement) */
     psg_step0 = psg.step_q16; gb_step0 = gb.step_q16; nes_step0 = nes.step_q16; ay_step0 = ay.step_q16;
     if (song.ym_clock && pitch > 5) pitch = 5;
@@ -259,6 +275,12 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
         speed_q16 = speed_q16 > 317u + 1500u ? speed_q16 - 317u : 0u;
         if (!speed_q16) { playing = 0; brake = 0; braked = 1; speed_q16 = 1500u; }
         fx_apply_rate();
+    }
+    if (song.is_mod && playing) {               /* module Amiga : le lecteur de mod.h, au tempo choisi */
+        mod.tempo_q8 = tempo;
+        mod_render(&mod, mix, BLOCK);
+        played_frac += BLOCK * tempo; played += played_frac >> 8; played_frac &= 255u;
+        left = 0;
     }
     while (left && playing) {
         uint32_t n, k = 0, j, p = ym_pos, kk = 0;
@@ -373,7 +395,7 @@ static void app_sysex(const uint8_t *p, uint32_t n)
         i++; t = 0;
         while (i < n && p[i] && t < sizeof sys - 1u) sys[t++] = (char)p[i++];
         sys[t] = 0;
-        ack_cmd = 6;                            /* 6 : ce firmware lit le RSM4 (5 : RSM3 ; 4 : RSM2 ; 2 : RSM1 ; 1 : un VGM brut) */
+        ack_cmd = 7;                            /* 7 : RSM4 et modules (RSMD) ; 6 : RSM4 ; 5 : RSM3 ; 4 : RSM2 ; 2 : RSM1 ; 1 : VGM brut */
     } else if (p[3] == 2u && n >= 6u) {         /* données */
         uint32_t seq = (uint32_t)p[4] | (uint32_t)p[5] << 7, off = seq * 512u, want, got;
         if (!rx_active || off >= rx_size) { ack_cmd = 0x42; return; }
@@ -611,6 +633,8 @@ static const char *voice_name(uint32_t k)
     static const char *const GB[4] = {"Carre 1", "Carre 2", "Onde", "Bruit"};
     static const char *const NS[5] = {"Carre 1", "Carre 2", "Triangle", "Bruit", "DPCM"};
     static const char *const AY[4] = {"Voie A", "Voie B", "Voie C", "Bruit AY"};
+    static const char *const MD[8] = {"Voie 1", "Voie 2", "Voie 3", "Voie 4", "Voie 5", "Voie 6", "Voie 7", "Voie 8"};
+    if (song.is_mod) return k < 8u ? MD[k] : "?";
     uint32_t y, p, g, a, tot = voices(&y, &p, &g, &a);
     if (song.ay_clock && k >= tot - 4u && k < tot) return AY[k - (tot - 4u)];
     if (song.ym_clock && k < y + 7u) return YM[k - y];

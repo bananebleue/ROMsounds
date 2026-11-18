@@ -18,6 +18,7 @@
 #include "gb_apu.h"
 #include "nes_apu.h"
 #include "ay_apu.h"
+#include "mod.h"
 #include "vgm.h"
 #include "../firmware/ext/uzlib/uzlib.h"
 
@@ -53,6 +54,7 @@ static psg_t psg;
 static gb_t gb;
 static nes_t nes;
 static ay_t ay;
+static mod_t mod;
 static uint32_t mute;
 
 static void vgm_ym(uint32_t port, uint32_t reg, uint32_t val)
@@ -116,6 +118,7 @@ static void apply_mute(void)
     gb.mute = (uint8_t)(song.gb_clock ? mute >> n & 15u : 0u); if (song.gb_clock) n += 4u;
     nes.mute = (uint8_t)(song.nes_clock ? mute >> n & 31u : 0u); if (song.nes_clock) n += 5u;
     ay.mute = (uint8_t)(song.ay_clock ? mute >> n & 15u : 0u);
+    mod.mute = song.is_mod ? mute & 0xFFu : 0u;
 }
 EXPORT("pv_mute") void pv_mute(uint32_t m) { mute = m; if (loaded) apply_mute(); }
 
@@ -124,6 +127,14 @@ EXPORT("pv_load") int pv_load(uint32_t size)
     const uint8_t *m = vgm_buf;
     uint32_t pcm, a, b, hl, yc, rate;
     loaded = 0;
+    song.is_mod = 0;
+    if (size >= 64u && size <= VGM_MAX && m[0] == 'R' && m[1] == 'S' && m[2] == 'M' && m[3] == 'D') {   /* module Amiga */
+        if (rd32(m + 4) != 1u || rd32(m + 8) + 64u != size || mod_load(&mod, m + 64, size - 64u)) return 4;
+        song.is_mod = 1; song.total = rd32(m + 12); song.loop_samples = rd32(m + 16);
+        played = 0; ended = 0; loaded = 1;
+        apply_mute();
+        return 0;
+    }
     if (size < 40u || size > VGM_MAX || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] < '1' || m[3] > '4')) return 4;
     hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : m[3] == '3' ? 56u : 64u;
     if (size < hl) return 4;
@@ -164,6 +175,7 @@ EXPORT("pv_render") uint32_t pv_render(uint32_t frames)
     static int32_t mix[PV_BLOCK * 2u], tmp[PV_BLOCK * 2u];
     uint32_t left = frames > PV_BLOCK ? PV_BLOCK : frames, o = 0, i, done;
     for (i = 0; i < 2u * left; i++) mix[i] = 0;
+    if (song.is_mod && loaded) { mod_render(&mod, mix, left); played += left; o = left; left = 0; }
     while (left && loaded && !ended) {
         uint32_t n, k = 0, j, p = ym_pos, kk = 0;
         DEV_SMPL *bb[2] = {mbuf_l + 1, mbuf_r + 1};

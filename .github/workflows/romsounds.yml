@@ -114,6 +114,14 @@ jobs:
           node ../tests/wav_check.js build/host/romsounds.wav 1-19:3000
           node ../tests/preview_test.js build/scout.rsm 20 build/pv_scout.wav
           node ../tests/wav_compare.js build/pv_scout.wav build/host/romsounds.wav 4 20 1
+          # Amiga : un module de test (tests/make_test_mod.js) préparé par la page, joué sur PC (hauteurs, coupures, glissando,
+          # retour au début) et dans la page (même son)
+          node ../tests/make_test_mod.js build/test.mod
+          node -e 'const R=require("../web/romsounds.js"),fs=require("fs");fs.writeFileSync("build/mod.rsm",R.packMod(new Uint8Array(fs.readFileSync("build/test.mod")),"test.mod").blob)'
+          printf '8500 end\n' > build/f85.txt && ROMSOUNDS_RSM=build/mod.rsm sh tests/run_host.sh build/f85.txt > /dev/null
+          node ../tests/wav_check.js build/host/romsounds.wav 0.2-1.9:~259 2.0-3.8:~518 4.0-5.7:1000 7.2-7.4:~259 7.5-7.65:0 7.75-8.4:~259
+          node ../tests/preview_test.js build/mod.rsm 8.4 build/pv_mod.wav
+          node ../tests/wav_compare.js build/pv_mod.wav build/host/romsounds.wav 1 8 1
           # la bibliothèque vue par la page : liste (SysEx 05), place pour D, retrait de B (06)
           node ../tests/lib_test.js
           # effets : tempo 200 % (fréquences de build/gb.rsm deux fois plus tôt), voix coupées, solo (SEL + touche),

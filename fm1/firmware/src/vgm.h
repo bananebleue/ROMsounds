@@ -24,7 +24,8 @@ typedef struct {
     uint32_t psg_cfg;                   /* bruit du SN76489 : rebouclage | largeur << 16 (0 : Sega) */
     uint32_t gb_clock, nes_clock;
     uint32_t bpm100, beat0;
-    uint32_t ay_clock, ay_type;         /* AY-3-8910 / YM2149 (type VGM : 0x00 AY, 0x10 YM2149...) */             /* tempo deviné par la page (BPM x 100, 0 : inconnu), premier temps (trames) */
+    uint32_t ay_clock, ay_type;         /* AY-3-8910 / YM2149 (type VGM : 0x00 AY, 0x10 YM2149...) */
+    uint32_t is_mod;                    /* 1 : un module Amiga (mod.h), pas des commandes VGM */             /* tempo deviné par la page (BPM x 100, 0 : inconnu), premier temps (trames) */
 } vgm_t;
 
 static int vgm_get(void);

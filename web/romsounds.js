@@ -454,6 +454,61 @@ function ymToVgm(u) {
 /** Un fichier .ym ? (compressé LHA ou non) */
 const isYm = u => u.length > 8 && (String.fromCharCode(...u.subarray(2, 7)) === '-lh5-' || /^YM[2-6]/.test(String.fromCharCode(...u.subarray(0, 3))));
 
+/* ---------- Amiga : modules (.mod, ProTracker et cousins) ---------- */
+const MOD_TAGS = { 'M.K.': 4, 'M!K!': 4, 'FLT4': 4, '4CHN': 4, '6CHN': 6, '8CHN': 8, 'FLT8': 8, 'OCTA': 8, 'CD81': 8 };
+/** Un module ? (signature à 1080, sinon le nom : .mod ou mod.xxx comme sur l'Amiga) */
+function isMod(u, name) {
+  const t = u.length >= 1084 ? String.fromCharCode(...u.subarray(1080, 1084)) : '';
+  return !!MOD_TAGS[t] || /^[1-8]CHN$|^0[1-8]CH$/.test(t) || /(\.mod$|^mod\.)/i.test(name || '');
+}
+/** Un module -> ce que reçoit le FM-1 (« RSMD » : en-tête de 64 octets puis le module tel quel) ; la durée jusqu'à ce
+ * que le morceau reboucle et son tempo sont calculés ici en lisant les motifs (vitesse, tempo, sauts, boucles). */
+function packMod(u, name) {
+  const t = u.length >= 1084 ? String.fromCharCode(...u.subarray(1080, 1084)) : '';
+  let nch = MOD_TAGS[t] || (/^[1-8]CHN$/.test(t) ? +t[0] : /^0[1-8]CH$/.test(t) ? +t[1] : 0), ns = 31, hdr = 1084;
+  if (!nch) { nch = 4; ns = 15; hdr = 600; }
+  if (u.length < hdr) throw new Error('module trop court');
+  const nord = u[20 + ns * 30], restart = u[21 + ns * 30] < nord ? u[21 + ns * 30] : 0, ord = u.subarray(22 + ns * 30, 22 + ns * 30 + 128);
+  if (!nord || nord > 128) throw new Error('ce n’est pas un module lisible');
+  let npat = 0;
+  for (let i = 0; i < 128; i++) if (i < nord || ord[i] < 64) npat = Math.max(npat, ord[i] + 1);
+  if (hdr + npat * 256 * nch > u.length) throw new Error('module incomplet');
+  const cell = (o, row, ch) => u.subarray(hdr + ((ord[o] * 64 + row) * nch + ch) * 4);
+  // la durée : on suit l'ordre de lecture jusqu'à revenir sur une ligne déjà jouée (hors boucles E6)
+  let speed = 6, tempo = 125, cur = 0, row = 0, frames = 0, bpm = 0;
+  const seen = new Map(), lrow = new Array(nch).fill(0), lcnt = new Array(nch).fill(0);
+  let loopAt = 0;
+  for (let guard = 0; guard < 200000; guard++) {
+    const key = cur * 64 + row, active = lcnt.some(c => c > 0);
+    if (!active) { if (seen.has(key)) { loopAt = seen.get(key); break; } seen.set(key, frames); }
+    let jump = -1, brk = -1, loopj = -1, pdelay = 0;
+    for (let ch = 0; ch < nch; ch++) {
+      const c = cell(cur, row, ch), e = c[2] & 15, p = c[3], x = p >> 4, y = p & 15;
+      if (e === 0xF && p) { if (p < 32) speed = p; else tempo = p; }
+      else if (e === 0xB) { jump = p; if (brk < 0) brk = 0; }
+      else if (e === 0xD) { brk = x * 10 + y; if (brk > 63) brk = 0; if (jump < 0) jump = cur + 1; }
+      else if (e === 0xE && x === 6) { if (!y) lrow[ch] = row; else if (!lcnt[ch]) { lcnt[ch] = y; loopj = lrow[ch]; } else if (--lcnt[ch]) loopj = lrow[ch]; }
+      else if (e === 0xE && x === 0xE) pdelay = y;
+    }
+    if (!bpm) bpm = tempo * 6 / speed;
+    frames += speed * (1 + pdelay) * 110250 / tempo;
+    if (loopj >= 0) row = loopj;
+    else if (jump >= 0) { cur = jump; row = brk >= 0 ? brk : 0; }
+    else if (++row >= 64) { row = 0; cur++; }
+    if (cur >= nord) cur = restart;
+  }
+  const total = Math.round(frames), loop = Math.round(frames - loopAt);
+  const title = ascii(String.fromCharCode(...u.subarray(0, 20)).replace(/\0.*$/s, '')) || ascii((name || '').replace(/\.mod$|^mod\./i, ''));
+  const head = new Uint8Array(64), dv = new DataView(head.buffer);
+  head.set([0x52, 0x53, 0x4D, 0x44]);                 // "RSMD"
+  dv.setUint32(4, 1, true); dv.setUint32(8, u.length, true); dv.setUint32(12, total, true); dv.setUint32(16, loop, true);
+  dv.setUint32(48, Math.round(bpm * 100), true); dv.setUint32(52, 0, true);
+  const blob = new Uint8Array(64 + u.length);
+  blob.set(head); blob.set(u, 64);
+  return { blob, isMod: true, nch, title, game: '', system: 'Amiga', author: '', sys: 'Amiga', total, loop,
+           bpm, phase: 0, raw: u.length, pcmLen: u.length - hdr - npat * 256 * nch, aLen: 0, bLen: 0 };
+}
+
 /** Un .zip (les packs de VGMRips) : [{ name, open() -> Promise<Uint8Array> }] pour ses .vgm / .vgz, dans l'ordre du pack.
  * Méthodes 0 (stocké) et 8 (deflate, décompressé par DecompressionStream). */
 function zipList(z) {
@@ -468,7 +523,7 @@ function zipList(z) {
     const raw = z.subarray(p + 46, p + 46 + nl);
     const name = flags & 0x800 ? new TextDecoder().decode(raw) : String.fromCharCode(...raw);
     p += 46 + nl + xl + cl;
-    if (!/\.(vg[mz]|ym)$/i.test(name) || rd32(z, lh) !== 0x04034B50) continue;
+    if (!/\.(vg[mz]|ym|mod)$|(^|\/)mod\.[^/]+$/i.test(name) || rd32(z, lh) !== 0x04034B50) continue;
     const at = lh + 30 + (z[lh + 26] | z[lh + 27] << 8) + (z[lh + 28] | z[lh + 29] << 8), data = z.subarray(at, at + csize);
     out.push({ name: name.split('/').pop(), open: async () => {
       if (method === 0) return data;
@@ -500,6 +555,6 @@ function vgmFrames(body, title, game, pack7, sys) {
            end: [0xF0, 0x7D, 0x52, 0x53, 0x03, ...b35(crc32(body)), 0xF7] };
 }
 
-const API = { beatsOf, setBpm, ymToVgm, isYm, unlha, VGM_MAX, VGM_ERR, LIB_MAX, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf, libFromFrames, libPlan, b35 };
+const API = { beatsOf, setBpm, ymToVgm, isYm, unlha, isMod, packMod, VGM_MAX, VGM_ERR, LIB_MAX, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf, libFromFrames, libPlan, b35 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API; else root.RSVGM = API;
 })(typeof self !== 'undefined' ? self : this);

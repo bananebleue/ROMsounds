@@ -3,7 +3,7 @@
 Extracteur de musiques de ROM de vieux jeux (Game Boy, Mega Drive, Super Nintendo…) et firmware lecteur pour le
 synthé M-VAVE FM-1. Fiche du projet : `bananebleue/Clodio`, `projets/extracteur-musiques-rom.md` (ticket #1).
 
-## État : lecteur Mega Drive, Master System, Game Gear, Game Boy, NES, Atari ST
+## État : lecteur Mega Drive, Master System, Game Gear, Game Boy, NES, Atari ST, Amiga
 
 Le firmware ROMsounds joue des musiques au format **VGM** : la page (section « Lecteur ») lit un fichier `.vgm` ou
 `.vgz`, le prépare (banque d'échantillons à part, musique compressée, flux DAC convertis) et l'envoie au FM-1 par USB.
@@ -12,6 +12,8 @@ Le FM-1 le joue aussitôt et le **garde en mémoire flash** (bibliothèque d'env
 - YM2612 : le cœur de MAME / Genesis Plus GX 1.5.1 (via libvgm), porté pour le FM-1 ; ~60 % du temps de calcul.
 - SN76489 (PSG) : écrit pour ROMsounds ; bruit réglable (Sega, TI), stéréo Game Gear. DAC : banque PCM, 0x8n / 0xE0 ;
   flux DAC des VGM 1.60 (0x90-0x95) rejoués par la page en écritures DAC, comme libvgm.
+- Amiga (`mod.h`) : modules ProTracker (M.K., 4 à 8 voies, Soundtracker 15 échantillons), envoyés tels quels
+  (« RSMD ») ; la page calcule la durée et le tempo en lisant les motifs. Pas encore : .xm, .s3m, .it.
 - AY-3-8910 / YM2149 (`ay_apu.h`, d'après emu2149) : Atari ST, Amstrad CPC, ZX Spectrum ; VGM (0xA0) ou fichiers .ym
   (YM2!, YM3!, YM3b, YM5!, YM6!, compressés LHA), convertis par la page ; à 2 % de libvgm. Pas encore : SNDH, effets
   spéciaux des YM5/6 (digidrums, voix SID).
