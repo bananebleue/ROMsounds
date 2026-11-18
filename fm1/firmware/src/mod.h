@@ -208,7 +208,7 @@ static void mod_tick(mod_t *m)
 {
     uint32_t k;
     if (++m->tick >= m->speed * (1u + m->pdelay)) {   /* ligne suivante */
-        if (m->tick != 0x10000u) {
+        if (m->tick != 65536u) {               /* (0xFFFF + 1 : le tout premier tic, voir mod_load) */
             m->tick = 0; m->pdelay = 0; m->rows_done++;
             if (m->loopj >= 0) { m->row = (uint32_t)m->loopj; m->loopj = -1; m->jump = -1; m->brk = -1; }
             else if (m->jump >= 0) { m->cur = (uint32_t)m->jump; m->row = m->brk >= 0 ? (uint32_t)m->brk : 0u; m->jump = -1; m->brk = -1; }
