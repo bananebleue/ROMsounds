@@ -376,7 +376,7 @@ function planVgm() {
       if (pl.deficit) parts.push('il faut libérer ' + pl.deficit * 4 + ' Ko (' + pl.need * 4 + ' Ko pour ce morceau, ' + pl.free * 4 + ' Ko libres)');
       if (pl.full) parts.push('la bibliothèque a déjà ' + RSVGM.LIB_MAX + ' morceaux');
       el.textContent = 'Pas assez de place : ' + parts.join(', ') + '. ' + (pl.ok ? (sel.length > 1 ? sel.length + ' morceaux cochés seront retirés' : '1 morceau coché sera retiré') + ' avant l’envoi.'
-        : 'Coche dans « Morceaux dans le FM-1 » (en haut) ceux à retirer' + (sel.length ? ' (pas encore assez).' : '.'));
+        : 'Coche dans « Morceaux dans le FM-1 », sous le lecteur, ceux à retirer' + (sel.length ? ' (pas encore assez).' : '.'));
       el.hidden = false;
       $('libDetails').open = true;
       if (pl.ok) send = 'Retirer ' + sel.length + ' et envoyer';
@@ -568,7 +568,7 @@ async function sendVgm() {
     if (st && st.total && st.entries) {
       showLib(st);
       const sel = selected(st), pl = RSVGM.libPlan(st, vgm.blob, sel);
-      if (!pl.ok) { planVgm(); throw new Error('pas assez de place dans le FM-1 : coche dans « Morceaux dans le FM-1 » (en haut) les morceaux à retirer, puis renvoie.'); }
+      if (!pl.ok) { planVgm(); throw new Error('pas assez de place dans le FM-1 : coche dans « Morceaux dans le FM-1 », sous le lecteur, les morceaux à retirer, puis renvoie.'); }
       if (pl.deficit || pl.full) await removeOn(sel, aw, log);
     }
     const bpm = +$('vgmBpm').value;
