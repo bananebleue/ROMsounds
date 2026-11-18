@@ -145,7 +145,7 @@
 <body>
 <header class="top">
   <h1 class="logo">ROMsounds</h1>
-  <p class="tagline">Les musiques de la Mega Drive, de la Master System, de la Game Gear, de la Game Boy et de la NES, jouées par ton FM-1.</p>
+  <p class="tagline">Les musiques de la Mega Drive, de la Master System, de la Game Gear, de la Game Boy, de la NES et de l’Atari ST, jouées par ton FM-1.</p>
   <div class="status">
     <span class="state"><span class="dot" id="dot"></span><span id="state">Non détecté</span></span>
     <button class="ghost" id="detect">Détecter le FM-1</button>
@@ -170,9 +170,9 @@
 
   <section class="win player" aria-labelledby="playerTitle">
     <h2 id="playerTitle">Lecteur</h2>
-    <p class="sub">Choisis un fichier VGM ou VGZ, ou un pack .zip, puis envoie-le : le FM-1 le joue aussitôt et le garde en mémoire, même éteint. La molette SELECT change de morceau, REC maintenu 2 s en retire un.</p>
+    <p class="sub">Choisis un fichier VGM, VGZ ou YM (Atari ST), ou un pack .zip, puis envoie-le : le FM-1 le joue aussitôt et le garde en mémoire, même éteint. La molette SELECT change de morceau, REC maintenu 2 s en retire un.</p>
     <div class="row">
-      <input type="file" id="vgmFile" accept=".vgm,.vgz,.zip" class="grow">
+      <input type="file" id="vgmFile" accept=".vgm,.vgz,.zip,.ym" class="grow">
     </div>
     <div class="row" id="vgmPickRow" hidden style="margin-top:10px">
       <select id="vgmPick" class="grow" aria-label="Morceau du pack"></select>
@@ -212,15 +212,16 @@
           <a href="https://vgmrips.net/packs/system/nintendo/game-boy" rel="noopener" target="_blank">Game Boy</a>,
           <a href="https://vgmrips.net/packs/system/nintendo/nintendo-entertainment-system" rel="noopener" target="_blank">NES</a>.</li>
         <li><a href="https://www.smspower.org/Music/" rel="noopener" target="_blank">SMS Power</a> : Master System et Game Gear.</li>
+        <li>Atari ST : les fichiers .ym, par exemple ceux du <a href="https://github.com/nguillaumin/ym-jukebox" rel="noopener" target="_blank">YM Jukebox</a> (archives BrainBug et Modland). Les fichiers SNDH de l’<a href="https://sndh.atari.org/" rel="noopener" target="_blank">archive SNDH</a> ne sont pas encore lus.</li>
       </ul>
-      <p class="sub" style="margin:0">ROMsounds joue les puces YM2612, SN76489 (PSG Sega), Game Boy DMG et NES APU. Les packs « FDS » ou avec des puces de cartouche en plus (VRC6, N163…) jouent sans ces voies-là.</p>
+      <p class="sub" style="margin:0">ROMsounds joue les puces YM2612, SN76489 (PSG Sega), Game Boy DMG, NES APU et AY-3-8910 / YM2149 (Atari ST, Amstrad CPC, ZX Spectrum). Les packs « FDS » ou avec des puces de cartouche en plus (VRC6, N163…) jouent sans ces voies-là.</p>
     </details>
   </section>
 
   <section class="win help" aria-labelledby="helpTitle">
     <h2 id="helpTitle">Sur le FM-1, pendant la lecture</h2>
     <ul style="color:var(--ink)">
-      <li>Touches du clavier : couper ou remettre une voix, de gauche à droite (Mega Drive : FM 1 à 6, DAC, PSG 1 à 3, bruit ; Master System, Game Gear : PSG 1 à 3, bruit ; Game Boy : carré 1, carré 2, onde, bruit ; NES : carré 1, carré 2, triangle, bruit, DPCM). Allumée : la voix joue ; faible et un clin d’œil par seconde : elle est coupée.</li>
+      <li>Touches du clavier : couper ou remettre une voix, de gauche à droite (Mega Drive : FM 1 à 6, DAC, PSG 1 à 3, bruit ; Master System, Game Gear : PSG 1 à 3, bruit ; Game Boy : carré 1, carré 2, onde, bruit ; NES : carré 1, carré 2, triangle, bruit, DPCM ; Atari ST : voies A, B, C, bruit). Allumée : la voix joue ; faible et un clin d’œil par seconde : elle est coupée.</li>
       <li>Solo + touche : cette voix seule ; recommencer : toutes les voix.</li>
       <li>Boucle, beat roll : tant que le bouton est tenu ; au relâché, le morceau reprend où il en est. Le beat roll se cale sur le tempo indiqué à l’envoi.</li>
       <li>Vinyl brake : la platine ralentit jusqu’à l’arrêt ; PLAY (ou le même bouton) relance.</li>
@@ -537,10 +538,12 @@ let pack = [];                                   // les morceaux d'un .zip (pack
 async function showVgm(u, name) {
   vgm = null; $('vgmBar').hidden = true;
   try {
-    const v = await packVgm(await RSVGM.gunzipIf(u));
+    let raw = await RSVGM.gunzipIf(u);
+    if (RSVGM.isYm(raw)) raw = RSVGM.ymToVgm(raw);   // Atari ST (.ym) : rejoué en commandes AY / YM2149
+    const v = await packVgm(raw);
     const f = { name };
     const lines = [(v.title || f.name) + (v.game ? ' — ' + v.game : ''), (v.system ? v.system + ' · ' : '') + (v.author || '')];
-    lines.push('Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489', v.gb && 'Game Boy', v.nes && 'NES 2A03'].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
+    lines.push('Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489', v.gb && 'Game Boy', v.nes && 'NES 2A03', v.ay && (v.ayType & 0xF0 ? 'YM2149' : 'AY-3-8910')].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
     lines.push('Durée : ' + mmss(v.total / 44100) + (v.loop ? ' (boucle de ' + mmss(v.loop / 44100) + ')' : ''));
     lines.push('Pour le FM-1 : ' + kb(v.blob.length) + ' (fichier ouvert : ' + kb(v.raw) + ' ; échantillons ' + kb(v.pcmLen) + ', musique compressée ' + kb(v.aLen + v.bLen) + ')');
     if (v.dacStream) lines.push('Flux DAC (VGM 1.60) : convertis par la page pour le FM-1.');
@@ -609,9 +612,9 @@ async function sendVgm() {
     const fr = vgmFrames(vgm.blob, vgm.title, vgm.game, FM1OTA.pack7, vgm.sys);
     acks.length = 0;
     send(fr.begin);
-    const hello = await waitAck(117, v => v === 1 || v === 2 || v === 4 || v === 5, 2000);
+    const hello = await waitAck(117, v => v === 1 || v === 2 || v >= 4 && v <= 6, 2000);
     if (hello === null) throw new Error('le FM-1 ne répond pas au début de l’envoi');
-    if (hello !== 5) throw new Error('ROMsounds sur le FM-1 est une ancienne version, qui ne lit pas ce format : réinstalle ROMsounds (section « Installer un firmware »), puis renvoie le morceau.');
+    if (hello !== 6) throw new Error('ROMsounds sur le FM-1 est une ancienne version, qui ne lit pas ce format : réinstalle ROMsounds (section « Installer un firmware »), puis renvoie le morceau.');
     const n = fr.data.length, t0 = Date.now();
     for (let seq = 0; seq < n; seq++) {
       const frame = fr.data[seq];

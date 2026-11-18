@@ -7,6 +7,7 @@
  *   stream : 2 s de flux DAC (VGM 1.60 : 0x90-0x95) en plus dans la boucle
  *   gg : un morceau Game Gear (SN76489 seul, stéréo), 4 s, sans boucle
  *   gb : un morceau Game Boy (4 voies, enveloppe, balayage, longueur, panoramique), 6 s, boucle sur les 2 dernières
+ *   ay : un morceau YM2149 (Atari ST, 2 MHz) : voie A, voie B en enveloppe, bruit sur C, puis les trois (boucle), 5 s
  *   nes : un morceau NES (2 carrées dont une qui balaye, triangle, bruit, DPCM), 6 s, boucle sur les 2 dernières
  * Déroulé (secondes) : 0-2 accord FM, 2-3 PSG seul (3 voies), 3-4 bruit, 4-5 DAC (une rampe), puis boucle sur le PSG. */
 #include <stdio.h>
@@ -73,6 +74,26 @@ static int game_boy(const char *path)
     return finish(path, "Game Boy", loop_at, 88200);
 }
 
+static void ayw(uint32_t reg, uint32_t val) { b(0xA0); b(reg); b(val); }
+
+static int ym2149(const char *path)
+{
+    uint32_t i, loop_at;
+    n = 0xC0; w32(0x08, 0x161); w32(0x34, 0xC0 - 0x34); w32(0x74, 2000000); buf[0x78] = 0x10;   /* YM2149 */
+    ayw(0, 284 & 255); ayw(1, 284 >> 8); ayw(8, 15); ayw(7, 0x3E);          /* voie A : 440 Hz */
+    wait(44100);
+    ayw(8, 0); ayw(2, 142); ayw(3, 0); ayw(9, 0x10); ayw(11, 0x00); ayw(12, 0x10); ayw(13, 0x0C); ayw(7, 0x3D);   /* B : 880 Hz, dents de scie */
+    wait(44100);
+    ayw(9, 0); ayw(6, 8); ayw(10, 12); ayw(7, 0x1F);                         /* C : bruit */
+    wait(44100);
+    loop_at = n;
+    ayw(0, 0x00); ayw(1, 2); ayw(2, 0x7F); ayw(3, 1); ayw(4, 0xAA); ayw(5, 1);   /* les trois, enveloppe triangle */
+    ayw(8, 0x10); ayw(9, 13); ayw(10, 0x10); ayw(11, 0x80); ayw(12, 0x08); ayw(13, 0x0E); ayw(7, 0x38);
+    for (i = 0; i < 100; i++) wait(882);
+    ayw(7, 0x3F);
+    return finish(path, "YM2149", loop_at, 88200);
+}
+
 static int nes(const char *path)
 {
     uint32_t i, at, loop_at;
@@ -113,6 +134,7 @@ int main(int argc, char **argv)
     memcpy(buf, "Vgm ", 4);
     if (argc > 2 && !strcmp(argv[2], "gb")) return game_boy(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "nes")) return nes(argv[1]);
+    if (argc > 2 && !strcmp(argv[2], "ay")) return ym2149(argv[1]);
     if (argc > 2 && !strcmp(argv[2], "gg")) {              /* gg : Game Gear (SN76489 seul, stéréo 0x4F), 4 s */
         w32(0x08, 0x151); w32(0x0C, 3579545); w32(0x34, 0x40 - 0x34);
         buf[0x28] = 0x09; buf[0x29] = 0x00; buf[0x2A] = 16;   /* bruit Sega */

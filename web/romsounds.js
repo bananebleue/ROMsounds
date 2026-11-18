@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * ROMsounds : lire un fichier VGM (en-tête, étiquettes GD3), le préparer pour le FM-1 et le découper en SysEx.
- * Ce que reçoit le FM-1 (« RSM3 », firmware/src/romsounds.c) :
- *   en-tête de 56 octets : "RSM3", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
+ * Ce que reçoit le FM-1 (« RSM4 », firmware/src/romsounds.c) :
+ *   en-tête de 64 octets : "RSM4", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
  *   parties, avertissements, bruit du SN76489 (rebouclage | largeur << 16), horloges Game Boy et NES, tempo (BPM x 100, deviné :
- *   beatsOf) et position du premier temps (trames) ; puis la banque
+ *   beatsOf) et position du premier temps (trames), horloge et type de l'AY-3-8910 / YM2149 ; puis la banque
  *   d'échantillons (brute : pour le YM2612, toutes les données de type 0 bout à bout ; pour la NES, l'image de sa mémoire
  *   $8000-$FFFF, que lit le DMC), puis les commandes
  *   avant la boucle (A) et à partir de la boucle (B), chacune compressée (deflate brut). Le FM-1 garde le tout compressé
@@ -19,7 +19,7 @@ const VGM_ERR = { 0x41: 'fichier trop gros pour le FM-1', 0x42: 'données hors d
   0x47: 'attribution refusée par le FM-1', 0x48: 'le FM-1 n’a pas pu l’enregistrer (mémoire flash)' };
 const LIB_MAX = 40;                      // morceaux au plus dans la bibliothèque du FM-1 (firmware : LIB_MAX)
 // horloges des autres puces dans l'en-tête (spécification VGM 1.71)
-const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x58, 0x5C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x74, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
+const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x58, 0x5C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
 const rd32 = (u, i) => (u[i] | u[i + 1] << 8 | u[i + 2] << 16 | u[i + 3] << 24) >>> 0;
 // l'écran du FM-1 n'a que l'ASCII : accents retirés, le reste remplacé par « ? »
 const ascii = t => (t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x20-\x7E]/g, '?').trim().slice(0, 28);
@@ -38,6 +38,7 @@ function parseVgm(u) {
   const head = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
   const gb = head >= 0x84 ? rd32(u, 0x80) & 0x3FFFFFFF : 0, nes = head >= 0x88 ? rd32(u, 0x84) & 0x3FFFFFFF : 0;
   const fds = head >= 0x88 && (rd32(u, 0x84) & 0x80000000) !== 0;
+  const ay = head >= 0x78 ? rd32(u, 0x74) & 0x3FFFFFFF : 0, ayType = ay && head >= 0x79 ? u[0x78] : 0;
   const start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
   const gd3 = rd32(u, 0x14) ? 0x14 + rd32(u, 0x14) : 0;
   const tags = [];
@@ -50,11 +51,11 @@ function parseVgm(u) {
   for (const o of OTHER_CHIPS) if (o + 4 <= Math.min(start, 0x100) && (rd32(u, o) & 0x3FFFFFFF)) others = true;
   if (ver >= 0x110 && rd32(u, 0x10)) others = true;
   const body = u.subarray(0, gd3 > start ? gd3 : u.length);
-  if (!ym && !sn && !gb && !nes) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES)');
+  if (!ym && !sn && !gb && !nes && !ay) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES, AY / YM2149)');
   if (fds) others = true;                        // (le FDS de la NES : pas encore)
-  return { body, ym, sn, gb, nes, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
+  return { body, ym, sn, gb, nes, ay, ayType, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
            title: ascii(tags[0] || tags[1]), game: ascii(tags[2] || tags[3]), system: tags[4] || '', author: tags[6] || '',
-           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : gb ? 'Game Boy' : nes ? 'NES' : 'SN76489') };
+           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : gb ? 'Game Boy' : nes ? 'NES' : ay ? (ayType & 0xF0 ? 'YM2149' : 'AY-3-8910') : 'SN76489') };
 }
 
 // longueur d'une commande VGM à la position p (spécification 1.71) ; 0 : fin
@@ -71,7 +72,7 @@ function cmdLen(u, p) {
   if (c >= 0xE0) return 5;
   return 1;
 }
-const KEEP = c => c === 0xB3 || c === 0xB4 || c === 0x4F || c === 0x50 || c === 0x52 || c === 0x53 || c === 0x61 || c === 0x62 || c === 0x63 || (c >= 0x70 && c <= 0x8F) || c === 0xE0;
+const KEEP = c => c === 0xA0 || c === 0xB3 || c === 0xB4 || c === 0x4F || c === 0x50 || c === 0x52 || c === 0x53 || c === 0x61 || c === 0x62 || c === 0x63 || (c >= 0x70 && c <= 0x8F) || c === 0xE0;
 
 /** Le tempo du morceau, deviné d'après les débuts de notes (YM2612 : key-on ; DAC : départs d'échantillons ; PSG : attaques
  * de volume ; Game Boy, NES : déclenchements) sur les 90 premières secondes : { bpm, phase (trames à 44,1 kHz du premier
@@ -80,7 +81,7 @@ const KEEP = c => c === 0xB3 || c === 0xB4 || c === 0x4F || c === 0x50 || c === 
 function beatsOf(u, start) {
   const BIN = 441, MAX = 9000;                   // 10 ms, 90 s
   const e = new Float32Array(MAX + 1);
-  const vol = [15, 15, 15, 15];
+  const vol = [15, 15, 15, 15], ayv = [0, 0, 0];
   let t = 0, n = 0, latch = 0;
   const hit = w => { const i = Math.floor(t / BIN); if (i < MAX) { e[i] += w; n++; } };
   for (let p = start; p < u.length && t < MAX * BIN;) {
@@ -100,6 +101,10 @@ function beatsOf(u, start) {
     } else if (c === 0xB3 && (u[p + 1] === 0x04 || u[p + 1] === 0x09 || u[p + 1] === 0x0E || u[p + 1] === 0x13) && (u[p + 2] & 0x80)) hit(u[p + 1] === 0x13 ? 1.5 : 1);
     else if (c === 0xB4 && (u[p + 1] === 0x03 || u[p + 1] === 0x07 || u[p + 1] === 0x0B || u[p + 1] === 0x0F)) hit(u[p + 1] === 0x0F ? 1.5 : 1);
     else if (c === 0xB4 && u[p + 1] === 0x15 && (u[p + 2] & 0x10)) hit(1.5);   // DPCM
+    else if (c === 0xA0 && (u[p + 1] & 0x7F) === 13) hit(1);                     // AY : enveloppe relancée
+    else if (c === 0xA0 && (u[p + 1] & 0x7F) >= 8 && (u[p + 1] & 0x7F) <= 10) {  // AY : volume qui monte
+      const ch = (u[p + 1] & 0x7F) - 8, v = u[p + 2] & 31; if ((v & 16) || v >= (ayv[ch] & 15) + 4) hit(1); ayv[ch] = v;
+    }
     p += k;
   }
   const len = Math.min(MAX, Math.floor(t / BIN));
@@ -242,8 +247,8 @@ async function packVgm(u) {
   const end = Uint8Array.of(0x66);
   const P = v.ym ? cat(pcm) : nesMem || new Uint8Array(0), A = await deflateRaw(cat([...a, end])), B = loop ? await deflateRaw(cat([...b, end])) : new Uint8Array(0);
   const beat = beatsOf(u, start);
-  const head = new Uint8Array(56), dv = new DataView(head.buffer);
-  head.set([0x52, 0x53, 0x4D, 0x33]);                 // "RSM3"
+  const head = new Uint8Array(64), dv = new DataView(head.buffer);
+  head.set([0x52, 0x53, 0x4D, 0x34]);                 // "RSM4"
   dv.setUint32(4, v.ym, true); dv.setUint32(8, v.sn, true);
   dv.setUint32(12, v.total, true); dv.setUint32(16, loop ? v.loop : 0, true);
   dv.setUint32(20, P.length, true); dv.setUint32(24, A.length, true); dv.setUint32(28, B.length, true);
@@ -251,6 +256,7 @@ async function packVgm(u) {
   dv.setUint32(36, ver >= 0x110 ? (u[0x28] | u[0x29] << 8 | u[0x2A] << 16) >>> 0 : 0, true);   // bruit du SN76489
   dv.setUint32(40, v.gb, true); dv.setUint32(44, v.nes, true);
   dv.setUint32(48, Math.round(beat.bpm * 100), true); dv.setUint32(52, beat.phase, true);   // tempo (BPM x 100), 1er temps
+  dv.setUint32(56, v.ay, true); dv.setUint32(60, v.ayType, true);                         // AY-3-8910 / YM2149
   const blob = cat([head, P, A, B]);
   return Object.assign(v, { blob, bpm: beat.bpm, phase: beat.phase, pcmLen: P.length, aLen: A.length, bLen: B.length, dacStream, raw: u.length });
 }
@@ -284,6 +290,170 @@ function libPlan(st, blob, sel = []) {
   return { need, free, deficit, full, dup, tooBig, ok };
 }
 
+/* ---------- Atari ST (et Amstrad CPC, ZX Spectrum) : fichiers .ym ---------- */
+/** LHA « -lh5- » (les .ym sont presque toujours compressés ainsi) : le contenu décompressé. Écrit d'après la
+ * description publique du format (dictionnaire 8 Ko, blocs de codes de Huffman). */
+function lh5(src, outLen) {
+  const NC = 510, NP = 14, NT = 19, CBIT = 9, PBIT = 4, TBIT = 5;
+  const out = new Uint8Array(outLen), left = new Uint16Array(2 * NC), right = new Uint16Array(2 * NC);
+  const cLen = new Uint8Array(NC), ptLen = new Uint8Array(NT > NP ? NT : NP), cTable = new Uint16Array(4096), ptTable = new Uint16Array(256);
+  let pos = 0, bitbuf = 0, sub = 0, bitcount = 0;
+  const fill = n => {
+    bitbuf = (bitbuf << n) & 0xFFFF;
+    while (n > bitcount) { n -= bitcount; bitbuf |= (sub << n) & 0xFFFF; sub = pos < src.length ? src[pos++] : 0; bitcount = 8; }
+    bitcount -= n; bitbuf |= sub >> bitcount;
+  };
+  const get = n => { const x = bitbuf >> (16 - n); fill(n); return x; };
+  function table(nchar, bitlen, tbits, tab) {
+    const count = new Uint32Array(17), weight = new Uint32Array(17), start = new Uint32Array(18);
+    for (let i = 0; i < nchar; i++) count[bitlen[i]]++;
+    for (let i = 1; i <= 16; i++) start[i + 1] = start[i] + (count[i] << (16 - i));
+    // (start[17] != 65536 : une table incomplète, par exemple un seul code ; LHA la construit quand même)
+    const jut = 16 - tbits;
+    for (let i = 1; i <= tbits; i++) { start[i] >>>= jut; weight[i] = 1 << (tbits - i); }
+    for (let i = tbits + 1; i <= 16; i++) weight[i] = 1 << (16 - i);
+    let i = (start[tbits + 1] >>> jut) & 0xFFFF;
+    if (i !== 0) { const k = 1 << tbits; while (i !== k) tab[i++] = 0; }
+    let avail = nchar;
+    const mask = 1 << (15 - tbits);
+    for (let ch = 0; ch < nchar; ch++) {
+      const len = bitlen[ch];
+      if (!len) continue;
+      const next = start[len] + weight[len];
+      if (len <= tbits) { for (let j = start[len]; j < next; j++) tab[j] = ch; }
+      else {
+        let k = start[len], arr = tab, idx = k >>> jut;
+        for (let j = len - tbits; j; j--) {
+          if (arr[idx] === 0) { right[avail] = left[avail] = 0; arr[idx] = avail++; }
+          const node = arr[idx];
+          if (k & mask) { arr = right; } else { arr = left; }
+          idx = node; k <<= 1;
+        }
+        arr[idx] = ch;
+      }
+      start[len] = next;
+    }
+  }
+  function ptRead(nn, nbit, special) {
+    const n = get(nbit);
+    if (!n) { const c = get(nbit); ptLen.fill(0, 0, nn); ptTable.fill(c); return; }
+    let i = 0;
+    while (i < n) {
+      let c = bitbuf >> 13;
+      if (c === 7) { let m = 1 << 12; while (m & bitbuf) { m >>= 1; c++; } }
+      fill(c < 7 ? 3 : c - 3);
+      ptLen[i++] = c;
+      if (i === special) { let z = get(2); while (z-- > 0) ptLen[i++] = 0; }
+    }
+    while (i < nn) ptLen[i++] = 0;
+    table(nn, ptLen, 8, ptTable);
+  }
+  function cRead() {
+    const n = get(CBIT);
+    if (!n) { const c = get(CBIT); cLen.fill(0); cTable.fill(c); return; }
+    let i = 0;
+    while (i < n) {
+      let c = ptTable[bitbuf >> 8];
+      if (c >= NT) { let m = 1 << 7; do { c = bitbuf & m ? right[c] : left[c]; m >>= 1; } while (c >= NT); }
+      fill(ptLen[c]);
+      if (c <= 2) { c = c === 0 ? 1 : c === 1 ? get(4) + 3 : get(CBIT) + 20; while (c-- > 0) cLen[i++] = 0; }
+      else cLen[i++] = c - 2;
+    }
+    while (i < NC) cLen[i++] = 0;
+    table(NC, cLen, 12, cTable);
+  }
+  let block = 0, o = 0;
+  fill(16);
+  while (o < outLen) {
+    if (!block) { block = get(16); ptRead(NT, TBIT, 3); cRead(); ptRead(NP, PBIT, -1); }
+    block--;
+    let j = cTable[bitbuf >> 4];
+    if (j < NC) fill(cLen[j]);
+    else { fill(12); let m = 1 << 15; do { j = bitbuf & m ? right[j] : left[j]; m >>= 1; } while (j >= NC); fill(cLen[j] - 12); }
+    if (j < 256) { out[o++] = j; continue; }
+    const len = j - 256 + 3;
+    let p = ptTable[bitbuf >> 8];
+    if (p < NP) fill(ptLen[p]);
+    else { fill(8); let m = 1 << 7; do { p = bitbuf & m ? right[p] : left[p]; m >>= 1; } while (p >= NP); fill(ptLen[p] - 8); }
+    if (p) p = (1 << (p - 1)) + get(p - 1);
+    for (let k = 0, from = o - p - 1; k < len && o < outLen; k++, from++) out[o++] = from >= 0 ? out[from] : 0x20;
+  }
+  return out;
+}
+
+/** Une archive LHA d'un seul fichier (en-tête de niveau 0, 1 ou 2) : le fichier, décompressé */
+function unlha(u) {
+  const m = String.fromCharCode(...u.subarray(2, 7));
+  if (m !== '-lh5-' && m !== '-lh0-') throw new Error('archive LHA non gérée (' + m + ')');
+  const level = u[20], orig = rd32(u, 11);
+  let packed = rd32(u, 7), at;
+  if (level === 2) at = u[0] | u[1] << 8;
+  else {
+    at = u[0] + 2;
+    if (level === 1) { let next = u[at - 2] | u[at - 1] << 8; while (next) { at += next; packed -= next; next = u[at - 2] | u[at - 1] << 8; } }
+  }
+  const data = u.subarray(at, at + packed);
+  return m === '-lh0-' ? data.slice(0, orig) : lh5(data, orig);
+}
+
+/** Un .ym (YM2!, YM3!, YM3b, YM5!, YM6!, compressé LHA ou non) -> un VGM (AY / YM2149, commande 0xA0) que packVgm lit.
+ * Les effets spéciaux des YM5 / YM6 (digidrums, voix SID, sync-buzzer) ne sont pas rejoués : le son de base, oui. */
+function ymToVgm(u) {
+  if (String.fromCharCode(...u.subarray(2, 5)) === '-lh') u = unlha(u);
+  const id = String.fromCharCode(...u.subarray(0, 4)), be32 = i => (u[i] << 24 | u[i + 1] << 16 | u[i + 2] << 8 | u[i + 3]) >>> 0;
+  let nb, regs, clock = 2000000, rate = 50, loop = 0, data, inter = true, name = '', author = '', comment = '';
+  if (id === 'YM2!' || id === 'YM3!' || id === 'YM3b') {
+    regs = 14; nb = Math.floor((u.length - 4 - (id === 'YM3b' ? 4 : 0)) / 14); data = 4;
+    if (id === 'YM3b') loop = rd32(u, u.length - 4);
+  } else if (id === 'YM5!' || id === 'YM6!') {
+    if (String.fromCharCode(...u.subarray(4, 12)) !== 'LeOnArD!') throw new Error('fichier .ym abîmé');
+    nb = be32(12); inter = (be32(16) & 1) !== 0;
+    const drums = u[20] << 8 | u[21];
+    clock = be32(22); rate = u[26] << 8 | u[27]; loop = be32(28);
+    let p = 34 + (u[32] << 8 | u[33]);
+    for (let d = 0; d < drums; d++) p += 4 + be32(p);
+    const str = () => { let t = ''; while (p < u.length && u[p]) t += String.fromCharCode(u[p++]); p++; return t; };
+    name = str(); author = str(); comment = str();
+    regs = 16; data = p;
+  } else throw new Error(/^(YM|MIX|YMT)/.test(id) ? 'format ' + id.replace(/[^ -~]/g, '') + ' (remix ou tracker) : pas encore lu' : 'ce n’est pas un fichier .ym');
+  if (!nb || data + nb * regs > u.length) throw new Error('fichier .ym incomplet');
+  if (loop >= nb) loop = 0;
+  const reg = (f, r) => inter ? u[data + r * nb + f] : u[data + f * regs + r];
+  const cmd = [];
+  const w = (r, v) => cmd.push(0xA0, r, v);
+  const cur = new Int16Array(14).fill(-1);
+  let t = 0, frac = 0, loopAt = -1, loopT = 0;
+  for (let f = 0; f < nb; f++) {
+    if (f === loop) { loopAt = cmd.length; loopT = t; cur.fill(-1); }
+    for (let r = 0; r < 14; r++) {
+      let v = reg(f, r);
+      if (r === 13) { if (v !== 0xFF) w(13, v & 15); continue; }
+      v &= [0xFF, 0x0F, 0xFF, 0x0F, 0xFF, 0x0F, 0x1F, 0x3F, 0x1F, 0x1F, 0x1F, 0xFF, 0xFF][r];
+      if (cur[r] !== v) { w(r, v); cur[r] = v; }
+    }
+    frac += 44100; let s = Math.floor(frac / rate); frac -= s * rate; t += s;
+    while (s > 0) { if (s === 882) { cmd.push(0x63); s = 0; } else if (s === 735) { cmd.push(0x62); s = 0; } else { const k = Math.min(s, 65535); cmd.push(0x61, k & 255, k >> 8); s -= k; } }
+  }
+  cmd.push(0xA0, 7, 0x3F, 0x66);
+  const sys = clock === 2000000 ? 'Atari ST' : clock === 1000000 ? 'Amstrad CPC' : clock === 1773400 ? 'ZX Spectrum' : 'AY-3-8910';
+  const tag = [name, '', '', '', sys, '', author, '', '', '', comment].map(s => [...(s || '')].map(c => [c.charCodeAt(0) & 255, 0]).flat().concat([0, 0])).flat();
+  const head = new Uint8Array(0x80), gd3 = new Uint8Array(12 + tag.length), body = Uint8Array.from(cmd);
+  const dv = new DataView(head.buffer), gv = new DataView(gd3.buffer);
+  head.set([0x56, 0x67, 0x6D, 0x20]);
+  dv.setUint32(8, 0x151, true); dv.setUint32(0x34, 0x80 - 0x34, true);
+  dv.setUint32(0x18, t, true);
+  if (loopAt >= 0 && loop < nb) { dv.setUint32(0x1C, 0x80 + loopAt - 0x1C, true); dv.setUint32(0x20, t - loopT, true); }
+  dv.setUint32(0x74, clock, true); head[0x78] = sys === 'Atari ST' ? 0x10 : 0x00;
+  dv.setUint32(0x14, 0x80 + body.length - 0x14, true);
+  gd3.set([0x47, 0x64, 0x33, 0x20]); gv.setUint32(4, 0x100, true); gv.setUint32(8, tag.length, true); gd3.set(tag, 12);
+  const all = new Uint8Array(0x80 + body.length + gd3.length);
+  all.set(head); all.set(body, 0x80); all.set(gd3, 0x80 + body.length);
+  dv.setUint32(4, all.length - 4, true); all.set(head.subarray(0, 8));
+  return all;
+}
+/** Un fichier .ym ? (compressé LHA ou non) */
+const isYm = u => u.length > 8 && (String.fromCharCode(...u.subarray(2, 7)) === '-lh5-' || /^YM[2-6]/.test(String.fromCharCode(...u.subarray(0, 3))));
+
 /** Un .zip (les packs de VGMRips) : [{ name, open() -> Promise<Uint8Array> }] pour ses .vgm / .vgz, dans l'ordre du pack.
  * Méthodes 0 (stocké) et 8 (deflate, décompressé par DecompressionStream). */
 function zipList(z) {
@@ -298,7 +468,7 @@ function zipList(z) {
     const raw = z.subarray(p + 46, p + 46 + nl);
     const name = flags & 0x800 ? new TextDecoder().decode(raw) : String.fromCharCode(...raw);
     p += 46 + nl + xl + cl;
-    if (!/\.vg[mz]$/i.test(name) || rd32(z, lh) !== 0x04034B50) continue;
+    if (!/\.(vg[mz]|ym)$/i.test(name) || rd32(z, lh) !== 0x04034B50) continue;
     const at = lh + 30 + (z[lh + 26] | z[lh + 27] << 8) + (z[lh + 28] | z[lh + 29] << 8), data = z.subarray(at, at + csize);
     out.push({ name: name.split('/').pop(), open: async () => {
       if (method === 0) return data;
@@ -330,6 +500,6 @@ function vgmFrames(body, title, game, pack7, sys) {
            end: [0xF0, 0x7D, 0x52, 0x53, 0x03, ...b35(crc32(body)), 0xF7] };
 }
 
-const API = { beatsOf, setBpm, VGM_MAX, VGM_ERR, LIB_MAX, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf, libFromFrames, libPlan, b35 };
+const API = { beatsOf, setBpm, ymToVgm, isYm, unlha, VGM_MAX, VGM_ERR, LIB_MAX, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf, libFromFrames, libPlan, b35 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API; else root.RSVGM = API;
 })(typeof self !== 'undefined' ? self : this);

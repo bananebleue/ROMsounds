@@ -35,6 +35,7 @@ static void app_sysex(const uint8_t *p, uint32_t n);
 #include "psg.h"
 #include "gb_apu.h"
 #include "nes_apu.h"
+#include "ay_apu.h"
 #include "fx.h"
 #include "vgm.h"
 #include "rx.h"
@@ -90,7 +91,7 @@ static fx_t fx;
 static uint32_t tempo_cur = 256;                /* Q8 : 256 = 100 % (64 .. 512) */
 static int32_t pitch;                           /* demi-tons, -12 .. +12 (Mega Drive : +5 au plus, le YM2612 coûte) */
 static uint32_t mute;                           /* bit = voix coupée (ordre : FM 1-6, DAC, PSG 1-3, bruit ; GB ; NES) */
-static uint32_t ym_step0, psg_step0, gb_step0, nes_step0;
+static uint32_t ym_step0, psg_step0, gb_step0, nes_step0, ay_step0;
 static uint32_t speed_q16 = 65536u;             /* vinyl brake : la platine ralentit (tempo et hauteur ensemble) */
 static uint32_t brake, braked;                  /* brake : ralentit ; braked : arrêtée (PLAY ou le bouton : relancer) */
 static int32_t track_turn;                      /* morceau suivant / précédent demandé (molette SELECT, boutons) */
@@ -105,6 +106,7 @@ static void *ym;
 static psg_t psg;
 static gb_t gb;
 static nes_t nes;
+static ay_t ay;
 
 static void vgm_ym(uint32_t port, uint32_t reg, uint32_t val)
 {
@@ -115,6 +117,7 @@ static void vgm_psg(uint32_t val) { psg_write(&psg, val); }
 static void vgm_psg_stereo(uint32_t val) { psg_stereo(&psg, val); }
 static void vgm_gb(uint32_t reg, uint32_t val) { gb_write(&gb, reg, val); }
 static void vgm_nes(uint32_t reg, uint32_t val) { nes_write(&nes, reg, val); }
+static void vgm_ay(uint32_t reg, uint32_t val) { ay_write(&ay, reg, val); }
 
 static void part_open(uint32_t which)           /* 0 : A (avant la boucle), 1 : B (la boucle) */
 {
@@ -162,8 +165,9 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
     const uint8_t *m = vgm_buf;
     uint32_t pcm, a, b;
     uint32_t hl;
-    if (size < 40u || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] != '1' && m[3] != '2' && m[3] != '3')) return 4;
-    hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : 56u;   /* RSM1 : 40 octets ; RSM2 (+ Game Boy, NES) : 48 ; RSM3 (+ tempo) : 56 */
+    if (size < 40u || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] < '1' || m[3] > '4')) return 4;
+    hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : m[3] == '3' ? 56u : 64u;   /* RSM1 : 40 ; RSM2 (+ Game Boy, NES) : 48 ;
+                                                 * RSM3 (+ tempo) : 56 ; RSM4 (+ AY / YM2149) : 64 */
     if (size < hl) return 4;
     pcm = rd32(m + 20); a = rd32(m + 24); b = rd32(m + 28);
     if (hl + pcm + a + b != size || !a) return 4;
@@ -175,11 +179,13 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
     song.nes_clock = hl > 40u ? rd32(m + 44) : 0u;
     song.bpm100 = hl > 48u ? rd32(m + 48) : 0u;
     song.beat0 = hl > 48u ? rd32(m + 52) : 0u;
+    song.ay_clock = hl > 56u ? rd32(m + 56) : 0u;
+    song.ay_type = hl > 56u ? rd32(m + 60) : 0u;
     if (song.bpm100 && (song.bpm100 < 3000u || song.bpm100 > 40000u)) song.bpm100 = 0;   /* (30 .. 400 BPM) */
     song.pcm = m + hl; song.pcm_len = pcm;
     part_a = m + hl + pcm; len_a = a;
     part_b = part_a + a; len_b = b;
-    if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock) return 3;
+    if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock && !song.ay_clock) return 3;
     song_size = size;
     return 0;
 }
@@ -196,12 +202,13 @@ static uint32_t voices(uint32_t *ym_at, uint32_t *psg_at, uint32_t *gb_at, uint3
     *psg_at = n; if (song.psg_clock) n += 4u;
     *gb_at = n; if (song.gb_clock) n += 4u;
     *nes_at = n; if (song.nes_clock) n += 5u;
+    if (song.ay_clock) n += 4u;                 /* AY / YM2149 : voies A, B, C, bruit (les 4 dernières) */
     return n;
 }
 static void fx_apply_mute(void)
 {
-    uint32_t y, p, g, a;
-    voices(&y, &p, &g, &a);
+    uint32_t y, p, g, a, tot = voices(&y, &p, &g, &a);
+    ay.mute = (uint8_t)(song.ay_clock ? mute >> (tot - 4u) & 15u : 0u);
     if (ym) ym2612_set_mute_mask(ym, song.ym_clock ? mute >> y & 0x7Fu : 0u);
     psg.mute = (uint8_t)(song.psg_clock ? mute >> p & 15u : 0u);
     gb.mute = (uint8_t)(song.gb_clock ? mute >> g & 15u : 0u);
@@ -214,6 +221,7 @@ static void fx_apply_rate(void)                  /* la hauteur : les puces vont 
     psg.step_q16 = mul_q16(psg_step0, r);
     gb.step_q16 = mul_q16(gb_step0, r);
     nes.step_q16 = mul_q16(nes_step0, r);
+    ay.step_q16 = mul_q16(ay_step0, r);
 }
 
 static void song_start(void)
@@ -226,8 +234,9 @@ static void song_start(void)
     psg_init(&psg, song.psg_clock ? song.psg_clock : 3579545u, song.psg_cfg & 0xFFFFu, song.psg_cfg >> 16 & 0xFFu);
     gb_init(&gb, song.gb_clock);
     nes_init(&nes, song.nes_clock, !song.ym_clock && song.pcm_len >= 0x8000u ? song.pcm : 0);   /* (NES : sa mémoire) */
+    ay_init(&ay, song.ay_clock, (song.ay_type & 0xF0u) != 0u);
     ym_step0 = (rate << 16) / 44100u;           /* (rate < 65536 : pas de débordement) */
-    psg_step0 = psg.step_q16; gb_step0 = gb.step_q16; nes_step0 = nes.step_q16;
+    psg_step0 = psg.step_q16; gb_step0 = gb.step_q16; nes_step0 = nes.step_q16; ay_step0 = ay.step_q16;
     if (song.ym_clock && pitch > 5) pitch = 5;
     fx_apply_rate();
     fx_apply_mute();
@@ -285,6 +294,7 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
         }
         if (song.gb_clock) gb_render(&gb, mix + 2u * o, n);
         if (song.nes_clock) nes_render(&nes, mix + 2u * o, n);
+        if (song.ay_clock) ay_render(&ay, mix + 2u * o, n);
         wait_q8 -= (int32_t)(n * tempo);
         played_frac += n * tempo; played += played_frac >> 8; played_frac &= 255u;
         left -= n; o += n;
@@ -363,7 +373,7 @@ static void app_sysex(const uint8_t *p, uint32_t n)
         i++; t = 0;
         while (i < n && p[i] && t < sizeof sys - 1u) sys[t++] = (char)p[i++];
         sys[t] = 0;
-        ack_cmd = 5;                            /* 5 : ce firmware lit le RSM3 (4 : RSM2 ; 2 : RSM1 seulement ; 1 : un VGM brut) */
+        ack_cmd = 6;                            /* 6 : ce firmware lit le RSM4 (5 : RSM3 ; 4 : RSM2 ; 2 : RSM1 ; 1 : un VGM brut) */
     } else if (p[3] == 2u && n >= 6u) {         /* données */
         uint32_t seq = (uint32_t)p[4] | (uint32_t)p[5] << 7, off = seq * 512u, want, got;
         if (!rx_active || off >= rx_size) { ack_cmd = 0x42; return; }
@@ -600,8 +610,9 @@ static const char *voice_name(uint32_t k)
     static const char *const SN[4] = {"PSG 1", "PSG 2", "PSG 3", "Bruit PSG"};
     static const char *const GB[4] = {"Carre 1", "Carre 2", "Onde", "Bruit"};
     static const char *const NS[5] = {"Carre 1", "Carre 2", "Triangle", "Bruit", "DPCM"};
-    uint32_t y, p, g, a;
-    voices(&y, &p, &g, &a);
+    static const char *const AY[4] = {"Voie A", "Voie B", "Voie C", "Bruit AY"};
+    uint32_t y, p, g, a, tot = voices(&y, &p, &g, &a);
+    if (song.ay_clock && k >= tot - 4u && k < tot) return AY[k - (tot - 4u)];
     if (song.ym_clock && k < y + 7u) return YM[k - y];
     if (song.psg_clock && k >= p && k < p + 4u) return SN[k - p];
     if (song.gb_clock && k >= g && k < g + 4u) return GB[k - g];

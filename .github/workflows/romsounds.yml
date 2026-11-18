@@ -103,6 +103,17 @@ jobs:
           node ../tests/wav_compare.js build/pv_gb.wav build/host/romsounds.wav 1 6 1
           node ../tests/preview_test.js build/test.rsm 6 build/pv_test.wav
           node ../tests/wav_check.js build/pv_test.wav 0.2-1.8:5000 2.2-2.9:2000 4.1-4.9:2000
+          # AY-3-8910 / YM2149 (Atari ST) : voie A à 440 Hz, enveloppe, bruit, les trois ; et de vrais .ym (exemples de StSound,
+          # licence MIT), relus par la page puis joués sur PC et dans la page (même son)
+          build/make_test_vgm build/ay.vgm ay > /dev/null && node ../tests/rx_test.js build/ay.vgm build/x.syx build/ay.rsm
+          ROMSOUNDS_RSM=build/ay.rsm sh tests/run_host.sh build/f6.txt > /dev/null
+          node ../tests/wav_check.js build/host/romsounds.wav 0.2-0.9:~440 1.1-1.9:1000 2.1-2.9:1000 3.1-4.9:2000
+          git clone -q --depth 1 https://github.com/arnaud-carre/StSound.git build/StSound
+          node ../tests/ym_test.js build/StSound/YmSampleFiles build/scout.rsm
+          printf '20000 end\n' > build/f20.txt && ROMSOUNDS_RSM=build/scout.rsm sh tests/run_host.sh build/f20.txt > /dev/null
+          node ../tests/wav_check.js build/host/romsounds.wav 1-19:3000
+          node ../tests/preview_test.js build/scout.rsm 20 build/pv_scout.wav
+          node ../tests/wav_compare.js build/pv_scout.wav build/host/romsounds.wav 4 20 1
           # la bibliothèque vue par la page : liste (SysEx 05), place pour D, retrait de B (06)
           node ../tests/lib_test.js
           # effets : tempo 200 % (fréquences de build/gb.rsm deux fois plus tôt), voix coupées, solo (SEL + touche),
