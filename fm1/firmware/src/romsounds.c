@@ -35,6 +35,7 @@ static void app_sysex(const uint8_t *p, uint32_t n);
 #include "psg.h"
 #include "gb_apu.h"
 #include "nes_apu.h"
+#include "fx.h"
 #include "vgm.h"
 #include "rx.h"
 #include "../ext/uzlib/uzlib.h"                 /* compilé à part, en -O2 */
@@ -70,7 +71,7 @@ static void app_audio(int32_t *out, uint32_t n)
 
 /* ---- le morceau : RSM1 en mémoire, compressé */
 #define VGM_MAX (268u * 1024u)                  /* = VGM_MAX de web/romsounds.js ; + le dictionnaire, + l'écran : le pool */
-static uint8_t vgm_buf[VGM_MAX] __attribute__((section(".pool")));
+static uint8_t vgm_buf[VGM_MAX] __attribute__((section(".pool"), aligned(4)));   /* (le haut sert aussi à l'écho) */
 static uint8_t dict[32768] __attribute__((section(".pool")));   /* fenêtre de la décompression */
 static const uint8_t *part_a, *part_b;
 static uint32_t len_a, len_b, cur_part;
@@ -79,7 +80,23 @@ static uint8_t obuf[256];
 static uint32_t obuf_r, obuf_n, inf_done, part_waited;   /* part_waited : la partie en cours a déjà fait attendre */
 static vgm_t song;
 static char title[32], game[32], sys[24];
-static uint32_t loaded, ended, wait, played;    /* played : trames jouées (44,1 kHz) */
+static uint32_t loaded, ended, played;          /* played : trames du morceau jouées (44,1 kHz) */
+static int32_t wait_q8;                         /* temps du morceau avant la commande suivante (trames, Q8) */
+static uint32_t played_frac;
+static uint32_t song_size;                      /* taille du morceau dans vgm_buf (au-dessus : la mémoire de l'écho) */
+
+/* ---- effets en direct : tempo (sans changer la hauteur), hauteur (sans changer le tempo), voix coupées, fx.h */
+static fx_t fx;
+static uint32_t tempo = 256;                    /* Q8 : 256 = 100 % (64 .. 512) */
+static int32_t pitch;                           /* demi-tons, -12 .. +12 (Mega Drive : +5 au plus, le YM2612 coûte) */
+static uint32_t mute;                           /* bit = voix coupée (ordre : FM 1-6, DAC, PSG 1-3, bruit ; GB ; NES) */
+static uint32_t ym_step0, psg_step0, gb_step0, nes_step0;
+static const uint32_t SEMI_Q16[25] = {32768, 34716, 36781, 38968, 41285, 43740, 46341, 49097, 52016, 55109, 58386, 61858,
+    65536, 69433, 73562, 77936, 82570, 87480, 92682, 98193, 104032, 110218, 116772, 123715, 131072};
+static uint32_t mul_q16(uint32_t a, uint32_t r)  /* a x r / 65536, r <= 2 x 65536, sans débordement */
+{
+    return (a >> 16) * r + ((a & 0xFFFFu) * (r >> 2) >> 14);
+}
 static void *ym;
 static psg_t psg;
 static gb_t gb;
@@ -156,13 +173,41 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
     part_a = m + hl + pcm; len_a = a;
     part_b = part_a + a; len_b = b;
     if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock) return 3;
+    song_size = size;
     return 0;
 }
 
 /* le YM2612 calcule à sa propre fréquence (horloge / 144 : 53 267 Hz en NTSC), ramenée à 44,1 kHz */
 static uint32_t ym_step, ym_pos;                /* Q16 : échantillons de la puce par trame */
-static DEV_SMPL mbuf_l[320], mbuf_r[320];       /* [0] : le dernier échantillon du lot précédent */
+static DEV_SMPL mbuf_l[640], mbuf_r[640];       /* [0] : le dernier échantillon du lot précédent (hauteur +5 : ~420) */
 static uint32_t mbuf_n;
+
+static uint32_t voices(uint32_t *ym_at, uint32_t *psg_at, uint32_t *gb_at, uint32_t *nes_at)
+{
+    uint32_t n = 0;
+    *ym_at = n; if (song.ym_clock) n += 7u;     /* FM 1-6, DAC */
+    *psg_at = n; if (song.psg_clock) n += 4u;
+    *gb_at = n; if (song.gb_clock) n += 4u;
+    *nes_at = n; if (song.nes_clock) n += 5u;
+    return n;
+}
+static void fx_apply_mute(void)
+{
+    uint32_t y, p, g, a;
+    voices(&y, &p, &g, &a);
+    if (ym) ym2612_set_mute_mask(ym, song.ym_clock ? mute >> y & 0x7Fu : 0u);
+    psg.mute = (uint8_t)(song.psg_clock ? mute >> p & 15u : 0u);
+    gb.mute = (uint8_t)(song.gb_clock ? mute >> g & 15u : 0u);
+    nes.mute = (uint8_t)(song.nes_clock ? mute >> a & 31u : 0u);
+}
+static void fx_apply_rate(void)                  /* la hauteur : les puces vont plus ou moins vite que leur horloge */
+{
+    uint32_t r = SEMI_Q16[pitch + 12];
+    ym_step = mul_q16(ym_step0, r);
+    psg.step_q16 = mul_q16(psg_step0, r);
+    gb.step_q16 = mul_q16(gb_step0, r);
+    nes.step_q16 = mul_q16(nes_step0, r);
+}
 
 static void song_start(void)
 {
@@ -174,11 +219,16 @@ static void song_start(void)
     psg_init(&psg, song.psg_clock ? song.psg_clock : 3579545u, song.psg_cfg & 0xFFFFu, song.psg_cfg >> 16 & 0xFFu);
     gb_init(&gb, song.gb_clock);
     nes_init(&nes, song.nes_clock, !song.ym_clock && song.pcm_len >= 0x8000u ? song.pcm : 0);   /* (NES : sa mémoire) */
-    ym_step = (rate << 16) / 44100u;            /* (rate < 65536 : pas de débordement) */
+    ym_step0 = (rate << 16) / 44100u;           /* (rate < 65536 : pas de débordement) */
+    psg_step0 = psg.step_q16; gb_step0 = gb.step_q16; nes_step0 = nes.step_q16;
+    if (song.ym_clock && pitch > 5) pitch = 5;
+    fx_apply_rate();
+    fx_apply_mute();
+    fx_attach(&fx, song_size <= VGM_MAX - FX_BYTES ? (int16_t *)(void *)(vgm_buf + VGM_MAX - FX_BYTES) : 0);
     ym_pos = 0; mbuf_n = 0; mbuf_l[0] = mbuf_r[0] = 0;
     song.pcm_pos = 0;
     part_open(0);
-    wait = 0; played = 0; ended = 0;
+    wait_q8 = 0; played = 0; played_frac = 0; ended = 0;
     primed = 0;
     playing = 1;
 }
@@ -191,9 +241,15 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
     while (left && playing) {
         uint32_t n, k = 0, j, p = ym_pos, kk = 0;
         DEV_SMPL *b[2] = {mbuf_l + 1, mbuf_r + 1};
-        if (!wait && !(wait = vgm_next(&song))) { playing = 0; ended = 1; break; }
+        if (wait_q8 <= 0) {                      /* les commandes de cet instant, puis l'attente suivante */
+            uint32_t wt = vgm_next(&song);
+            if (!wt) { playing = 0; ended = 1; break; }
+            wait_q8 += (int32_t)(wt << 8);
+            continue;
+        }
         part_waited = 1;
-        n = wait < left ? wait : left;
+        n = ((uint32_t)wait_q8 + tempo - 1u) / tempo;   /* trames de sortie jusqu'à la commande suivante, au tempo choisi */
+        if (n > left) n = left;
         for (j = 0; j < n; j++) { p += ym_step; k += p >> 16; p &= 0xFFFFu; }
         if (song.ym_clock) {
             mbuf_l[0] = mbuf_l[mbuf_n]; mbuf_r[0] = mbuf_r[mbuf_n];
@@ -216,8 +272,11 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
         }
         if (song.gb_clock) gb_render(&gb, mix + 2u * o, n);
         if (song.nes_clock) nes_render(&nes, mix + 2u * o, n);
-        wait -= n; left -= n; o += n; played += n;
+        wait_q8 -= (int32_t)(n * tempo);
+        played_frac += n * tempo; played += played_frac >> 8; played_frac &= 255u;
+        left -= n; o += n;
     }
+    if (loaded) fx_process(&fx, mix, BLOCK);
     for (i = 0; i < BLOCK; i++, w++) {
         int32_t l = mix[2u * i], r = mix[2u * i + 1u];
         ring[(w & (RING - 1u)) * 2u] = (int16_t)(l > 32767 ? 32767 : l < -32767 ? -32767 : l);
@@ -230,11 +289,14 @@ static void render_block(void)                  /* 256 trames à 44,1 kHz dans l
 static uint32_t rx_size, rx_got, rx_active, load_req;
 static volatile int32_t ack_cmd = -1, ack_seq = -1;
 static volatile uint32_t stat_req;              /* la page demande la place de la bibliothèque (SysEx 04) */
+static volatile uint32_t list_req, del_req, del_crc;   /* SysEx 05 : la liste ; 06 : retirer un morceau (par son CRC) */
 
 static void app_sysex(const uint8_t *p, uint32_t n)
 {
     if (n < 4u || p[1] != 0x52u || p[2] != 0x53u) return;
     if (p[3] == 4u) { stat_req = 1; return; }   /* place : CC 119 morceaux, CC 120 secteurs pris, CC 121 secteurs en tout */
+    if (p[3] == 5u) { list_req = 1; return; }   /* liste : un SysEx 0x15 par morceau, puis 0x16 (la place) */
+    if (p[3] == 6u && n >= 9u) { del_crc = rd35(p + 4); del_req = 1; return; }   /* retirer : CC 117 = 6, ou 0x46 */
     if (p[3] == 1u && n >= 9u) {                /* début */
         uint32_t i = 9, t = 0, size = rd35(p + 4);
         if (!size || size > VGM_MAX) { ack_cmd = 0x41; return; }
@@ -344,6 +406,7 @@ static int lib_free_run(uint32_t ns)           /* le premier trou de ns secteurs
 static void lib_remove(uint32_t i)
 {
     if (i >= lib.count) return;
+    if (i < lib.cur) lib.cur--;                 /* (le morceau courant reste le même) */
     for (; i + 1u < lib.count; i++) lib.e[i] = lib.e[i + 1u];
     lib.count--;
     if (lib.cur >= lib.count) lib.cur = lib.count ? lib.count - 1u : 0u;
@@ -471,6 +534,118 @@ static const char *msg;                         /* un message passager (Enregist
 static uint32_t msg_until;
 static void say(const char *m) { msg = m; msg_until = fm1_ms + 2500u; }
 
+/* ---- effets : les touches coupent les voix (SEL + touche : solo), les molettes règlent, FX tenu : boucle, HOME : tout
+ * remettre. KNOB1 tempo, KNOB2 hauteur, KNOB3 filtre, KNOB4 écho, ALGORITHM temps de l'écho et de la boucle,
+ * PRESETS grain. */
+static char fx_msg[40];
+static uint32_t fx_notes_prev, fx_leds = ~0u;
+static const char *voice_name(uint32_t k)
+{
+    static const char *const YM[7] = {"FM 1", "FM 2", "FM 3", "FM 4", "FM 5", "FM 6", "DAC"};
+    static const char *const SN[4] = {"PSG 1", "PSG 2", "PSG 3", "Bruit PSG"};
+    static const char *const GB[4] = {"Carre 1", "Carre 2", "Onde", "Bruit"};
+    static const char *const NS[5] = {"Carre 1", "Carre 2", "Triangle", "Bruit", "DPCM"};
+    uint32_t y, p, g, a;
+    voices(&y, &p, &g, &a);
+    if (song.ym_clock && k < y + 7u) return YM[k - y];
+    if (song.psg_clock && k >= p && k < p + 4u) return SN[k - p];
+    if (song.gb_clock && k >= g && k < g + 4u) return GB[k - g];
+    if (song.nes_clock && k >= a && k < a + 5u) return NS[k - a];
+    return "?";
+}
+static char *put_i(char *p, int32_t v) { if (v > 0) *p++ = '+'; else if (v < 0) { *p++ = '-'; v = -v; } return put_u(p, (uint32_t)v); }
+static int32_t fx_turn(uint32_t enc, int32_t v, int32_t step, int32_t lo, int32_t hi, int *moved)
+{
+    int32_t e = fm1_enc_take(enc);
+    if (!e) return v;
+    v += e * step;
+    *moved = 1;
+    return v < lo ? lo : v > hi ? hi : v;
+}
+static uint32_t fx_any(void) { return tempo != 256u || pitch || mute || fx.filt || fx.echo || fx.grain || fx.stut; }
+static void fx_summary(char *s)                  /* la ligne du bas, quand un effet est en route */
+{
+    char *p = s;
+    uint32_t m = mute, n = 0;
+    if (tempo != 256u) { p = put_u(p, tempo * 100u / 256u); p = put_s(p, "% "); }
+    if (pitch) { p = put_i(p, pitch); p = put_s(p, "dt "); }
+    if (fx.filt) p = put_s(p, fx.filt < 0 ? "PB " : "PH ");
+    if (fx.echo) p = put_s(p, "echo ");
+    if (fx.grain) p = put_s(p, "grain ");
+    if (fx.stut) p = put_s(p, "boucle ");
+    while (m) { n += m & 1u; m >>= 1; }
+    if (n) { p = put_u(p, n); p = put_s(p, n > 1u ? " muettes" : " muette"); }
+    *p = 0;
+}
+static void fx_controls(uint32_t pressed)
+{
+    uint32_t y, pa, g, a, nv = voices(&y, &pa, &g, &a), notes = fm1_in.notes, hit = notes & ~fx_notes_prev, k, leds = 0;
+    int moved = 0;
+    char *p = fx_msg;
+    fx_notes_prev = notes;
+    if (nv > 27u) nv = 27u;
+    if (loaded) for (k = 0; k < nv; k++) {
+        uint32_t all = (1u << nv) - 1u;
+        if (!(hit >> k & 1u)) continue;
+        if (fm1_in.buttons >> BTN_SEL & 1u) {    /* solo, ou tout remettre si c'était déjà le solo de cette voix */
+            if ((mute & all) == (all & ~(1u << k))) { mute = 0; p = put_s(fx_msg, "Toutes les voix"); }
+            else { mute = all & ~(1u << k); p = put_s(put_s(fx_msg, "Solo "), voice_name(k)); }
+        } else {
+            mute ^= 1u << k;
+            p = put_s(put_s(fx_msg, voice_name(k)), mute >> k & 1u ? " coupee" : " remise");
+        }
+        *p = 0; say(fx_msg);
+        fx_apply_mute();
+    }
+    {
+        int32_t t = fx_turn(ENC_KNOB1, (int32_t)tempo, 13, 64, 512, &moved);   /* ~5 % le cran */
+        if (moved) { tempo = (uint32_t)t; p = put_s(put_u(put_s(fx_msg, "Tempo "), tempo * 100u / 256u), " %"); *p = 0; say(fx_msg); moved = 0; }
+        t = fx_turn(ENC_KNOB2, pitch, 1, -12, song.ym_clock ? 5 : 12, &moved);
+        if (moved) { pitch = t; fx_apply_rate(); p = put_i(put_s(fx_msg, "Hauteur "), pitch); p = put_s(p, " demi-tons"); *p = 0; say(fx_msg); moved = 0; }
+        t = fx_turn(ENC_KNOB3, fx.filt, 1, -20, 20, &moved);
+        if (moved) {
+            if (!fx.filt || (fx.filt < 0) != (t < 0)) { fx.lo[0] = fx.lo[1] = fx.bd[0] = fx.bd[1] = 0; }
+            fx.filt = (int8_t)t;
+            if (!t) p = put_s(fx_msg, "Filtre eteint");
+            else p = put_s(put_u(put_s(fx_msg, t < 0 ? "Passe-bas " : "Passe-haut "), t < 0 ? FX_LP_HZ[-t] : FX_HP_HZ[t]), " Hz");
+            *p = 0; say(fx_msg); moved = 0;
+        }
+        t = fx_turn(ENC_KNOB4, fx.echo, 1, 0, 10, &moved);
+        if (moved) {
+            fx.echo = (uint8_t)t;
+            if (!fx.buf) p = put_s(fx_msg, "Echo : morceau trop gros");
+            else if (!t) p = put_s(fx_msg, "Echo eteint");
+            else p = put_s(put_u(put_s(fx_msg, "Echo "), (uint32_t)t), " / 10");
+            *p = 0; say(fx_msg); moved = 0;
+        }
+        t = fx_turn(ENC_ALGORITHM, fx.time, 1, 1, 11, &moved);
+        if (moved) { fx.time = (uint8_t)t; p = put_s(put_u(put_s(fx_msg, "Temps echo, boucle "), (uint32_t)t * 50u), " ms"); *p = 0; say(fx_msg); moved = 0; }
+        t = fx_turn(ENC_PRESETS, fx.grain, 1, 0, 12, &moved);
+        if (moved) { fx.grain = (uint8_t)t; if (t) p = put_u(put_s(fx_msg, "Grain "), (uint32_t)t); else p = put_s(fx_msg, "Grain eteint"); *p = 0; say(fx_msg); }
+    }
+    if (pressed & (1u << BTN_HOME)) {
+        tempo = 256; pitch = 0; mute = 0;
+        fx_reset(&fx);
+        fx_apply_rate(); fx_apply_mute();
+        say("Effets remis a zero");
+    }
+    {
+        static uint32_t was;
+        uint32_t held = fm1_in.buttons >> BTN_FX & 1u;
+        if (held != was) {
+            was = held;
+            fx_stutter(&fx, held && loaded);
+            if (held && loaded && !fx.buf) say("Boucle : morceau trop gros");
+        }
+    }
+    if (loaded) for (k = 0; k < nv; k++) if (!(mute >> k & 1u)) leds |= 1u << k;   /* une touche allumée : une voix qui joue */
+    if (leds != fx_leds) {
+        for (k = 0; k < 27u; k++) if ((leds ^ fx_leds) >> k & 1u) fm1_led_key(KEY_LED(k), (int)(leds >> k & 1u));
+        fx_leds = leds;
+    }
+    fm1_led_key(BTN_FX, fx.stut);
+}
+
 static void draw_song(void)                     /* système, titre, jeu, place dans la bibliothèque */
 {
     char s[40], *p;
@@ -515,7 +690,8 @@ static void draw_time(uint32_t pct, uint32_t cuts)
         p = put_s(s, "calcul "); p = put_u(p, pct); p = put_s(p, " %   coupures "); p = put_u(p, cuts); *p = 0;
         draw_text_box(0, 198, 240, &FONT_S, s, pct < 85u ? C_OFF : C_BAD, 1);
     }
-    draw_text_box(0, 220, 240, &FONT_S, ended ? "fin - PLAY : rejouer" : playing ? "PLAY pause  REC debut"
+    if (fx_any() && !ended) { fx_summary(s); draw_text_box(0, 220, 240, &FONT_S, s, C_ACC, 1); }
+    else draw_text_box(0, 220, 240, &FONT_S, ended ? "fin - PLAY : rejouer" : playing ? "PLAY pause  REC debut"
                                                                               : "PLAY lecture  REC debut", C_OFF, 1);
 }
 
@@ -534,6 +710,59 @@ static void open_lib(uint32_t i, uint32_t play)  /* jouer le morceau i de la bib
     if (lib.cur != i) { lib.cur = (uint16_t)i; lib_save(); }
     loaded = 1; song_start(); playing = play; underruns = 0;
     draw_song();
+}
+
+static void lib_delete(uint32_t i)              /* retirer le morceau i (le courant : on passe au suivant, à l'arrêt) */
+{
+    uint32_t was_cur = i == lib.cur;
+    if (i >= lib.count) return;
+    if (was_cur) playing = 0;
+    lib_remove(i);
+    show_busy("Effacement...");
+    lib_save();
+    if (!was_cur) draw_song();
+    else if (lib.count) open_lib(lib.cur < lib.count ? lib.cur : 0u, 0);
+    else { loaded = 0; draw_song(); }
+    stat_req = 1;
+}
+
+/* ---- SysEx vers la page : F0 7D 52 53 ... F7, des octets de 7 bits */
+#ifdef DINGHY_HOST
+static int rs_sysex_send(const uint8_t *p, uint32_t n)
+{
+    uint32_t i;
+    printf("%6u ms  SYSEX out", fm1_ms);
+    for (i = 0; i < n; i++) printf(" %02X", p[i]);
+    printf("\n");
+    return 0;
+}
+#else
+static int rs_sysex_send(const uint8_t *p, uint32_t n) { return ota_wire_send(p, n); }
+#endif
+static uint8_t *put7_35(uint8_t *q, uint32_t v) { uint32_t k; for (k = 0; k < 5u; k++) *q++ = (uint8_t)(v >> (7u * k) & 127u); return q; }
+static uint8_t *put7_str(uint8_t *q, const char *t) { while (*t) *q++ = (uint8_t)(*t++ & 127); *q++ = 0; return q; }
+static void lib_send_list(void)                 /* 0x15 : n°, secteurs, taille, CRC, titre, jeu, système ; 0x16 : la place */
+{
+    static uint8_t f[128];
+    uint32_t i, ok = lib_ok() ? 1u : 0u;
+    for (i = 0; ok && i < lib.count; i++) {
+        const lib_ent_t *e = &lib.e[i];
+        uint8_t *q = f;
+        *q++ = 0xF0; *q++ = 0x7D; *q++ = 0x52; *q++ = 0x53; *q++ = 0x15;
+        *q++ = (uint8_t)i; *q++ = (uint8_t)(e->nsect & 127u);
+        q = put7_35(q, e->size); q = put7_35(q, e->crc);
+        q = put7_str(q, e->title); q = put7_str(q, e->game); q = put7_str(q, e->sys);
+        q[-1] = 0xF7;                           /* (le dernier 0 devient la fin) */
+        if (rs_sysex_send(f, (uint32_t)(q - f))) return;
+    }
+    {
+        uint8_t *q = f;
+        *q++ = 0xF0; *q++ = 0x7D; *q++ = 0x52; *q++ = 0x53; *q++ = 0x16;
+        *q++ = (uint8_t)(ok ? lib.count : 0u); *q++ = (uint8_t)(ok ? LIB_NS - lib_free_sect() : 0u);
+        *q++ = (uint8_t)(ok ? LIB_NS : 0u); *q++ = (uint8_t)(ok && lib.count && loaded ? lib.cur : 127u);
+        *q++ = 0xF7;
+        rs_sysex_send(f, (uint32_t)(q - f));
+    }
 }
 
 #ifdef DINGHY_HOST                              /* sur PC : ROMSOUNDS_RSM=a.rsm,b.rsm... : reçus comme depuis la page, un toutes
@@ -563,6 +792,28 @@ static void rs_host_load(void)
     strcpy(game, "(test)");
     strcpy(sys, "Test");
 }
+/* sur PC : ROMSOUNDS_SX="ms:7D 52 53 05;ms:7D 52 53 06 ..." : des SysEx de la page (sans F0 ni F7), à ces instants */
+static void rs_host_sx(void)
+{
+    static uint32_t at;
+    const char *l = getenv("ROMSOUNDS_SX");
+    uint8_t b[64];
+    uint32_t n = 0, t;
+    if (!l) return;
+    l += at;
+    if (!*l || sscanf(l, "%u:", &t) != 1 || fm1_ms < t) return;
+    while (*l && *l != ':') l++, at++;
+    if (*l) l++, at++;
+    while (*l && *l != ';' && n < sizeof b) {
+        unsigned v;
+        int k;
+        if (sscanf(l, " %x%n", &v, &k) != 1) break;
+        b[n++] = (uint8_t)v; l += k; at += (uint32_t)k;
+    }
+    while (*l && *l != ';') l++, at++;
+    if (*l == ';') at++;
+    app_sysex(b, n);
+}
 #endif
 
 static void app_main(void)
@@ -571,6 +822,7 @@ static void app_main(void)
     int32_t turn = 0;
     uint32_t turn_t = 0;
 
+    fx_reset(&fx);
     lcd_fill(0, 0, 240, 240, C_BLACK);
     draw_text_box(0, 18, 240, &FONT_L, APP_NAME, C_ACC, 1);
     lib_load();
@@ -581,6 +833,7 @@ static void app_main(void)
         platform_poll();
 #ifdef DINGHY_HOST
         rs_host_load();
+        rs_host_sx();
 #endif
 
         if (load_req) {                          /* morceau reçu : l'ouvrir, le garder, répondre à la page */
@@ -603,6 +856,15 @@ static void app_main(void)
         }
         if (ack_cmd >= 0) { midi_send(0xBFu, 117u, (uint32_t)ack_cmd); ack_cmd = -1; }
         if (ack_seq >= 0) { midi_send(0xBFu, 118u, (uint32_t)ack_seq); ack_seq = -1; }
+        if (del_req) {                          /* la page retire un morceau (avant d'en envoyer un, faute de place) */
+            uint32_t i, c = del_crc;
+            del_req = 0;
+            for (i = 0; i < lib.count && lib.e[i].crc != c; i++) {}
+            if (i < lib.count && lib_ok()) { lib_delete(i); say("retire depuis la page"); ack_cmd = 6; }
+            else ack_cmd = 0x46;
+            t_shown = 0;
+        }
+        if (list_req && ack_cmd < 0) { list_req = 0; lib_send_list(); }
         if (stat_req && ack_cmd < 0) {          /* après l'accusé de fin : la page lit la place juste après */
             uint32_t ok = lib_ok() ? 1u : 0u;
             stat_req = 0;
@@ -620,6 +882,7 @@ static void app_main(void)
         }
 
         b = fm1_input_edges(&rel);
+        fx_controls(b);
         if (b & (1u << BTN_PLAY) && loaded) {
             if (ended) song_start();
             else playing = !playing;
@@ -628,15 +891,9 @@ static void app_main(void)
         /* REC : revenir au début ; maintenu 2 s : retirer le morceau de la bibliothèque */
         if (b & (1u << BTN_REC)) { rec_t = fm1_ms; rec_done = 0; }
         if (fm1_in.buttons >> BTN_REC & 1u && !rec_done && fm1_ms - rec_t >= 2000u && lib.count) {
-            uint32_t i = lib.cur;
             rec_done = 1;
-            playing = 0;
-            lib_remove(i);
-            show_busy("Effacement...");
-            lib_save();
-            if (lib.count) open_lib(lib.cur < lib.count ? lib.cur : 0u, 0);
-            else { loaded = 0; draw_song(); }
-            say("morceau retire"); stat_req = 1;
+            lib_delete(lib.cur);
+            say("morceau retire");
             t_shown = 0;
         }
         if (rel & (1u << BTN_REC) && !rec_done && loaded) { uint32_t was = playing; song_start(); playing = was; t_shown = 0; }

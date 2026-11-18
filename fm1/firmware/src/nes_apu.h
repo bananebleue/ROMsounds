@@ -70,6 +70,7 @@ typedef struct {
     uint8_t dm_on, dm_loop, dm_out, dm_buf, dm_buf_full, dm_shift, dm_bits, dm_silent;
     uint16_t dm_rate, dm_addr0, dm_addr, dm_len0, dm_left; int32_t dm_timer;
     int32_t hp_x, hp_y;                         /* passe-haut */
+    uint8_t mute;                               /* ROMsounds (effets) : bits carré 1, carré 2, triangle, bruit, DMC */
 } nes_t;
 
 static void nes_init(nes_t *a, uint32_t clock, const uint8_t *mem)
@@ -208,6 +209,7 @@ static void nes_render(nes_t *a, int32_t *out, uint32_t n)
             sq[k] = 0;
             if (p->len && p->t >= 8u && nes_sweep_target(p, k) <= 0x7FFu && (NES_DUTY[p->duty] << p->pos & 0x80u))
                 sq[k] = p->constant ? p->vol : p->env_vol;
+            if (a->mute >> k & 1u) sq[k] = 0;
             pul += (int32_t)sq[k];
         }
         {                                       /* triangle : un pas toutes les (t + 1) cycles, s'il entend */
@@ -247,7 +249,9 @@ static void nes_render(nes_t *a, int32_t *out, uint32_t n)
                 if (!--a->dm_left && a->dm_loop) { a->dm_addr = a->dm_addr0; a->dm_left = a->dm_len0; }
             }
         }
-        tnd = NES_TND[3u * tri + 2u * noi + a->dm_out];
+        if (a->mute & 4u) tri = 0;
+        if (a->mute & 8u) noi = 0;
+        tnd = NES_TND[3u * tri + 2u * noi + (a->mute & 16u ? 0u : a->dm_out)];
         /* triangle, bruit et DMC x 0,92 face aux carrées : comme NSFPlay (formule exacte x 0,95, ici l'approximation) */
         x = (int32_t)((NES_PULSE[pul] + ((uint32_t)tnd * 235u >> 8)) * (uint32_t)(NES_GAIN >> 2) >> 14);
         y = x - a->hp_x + a->hp_y - (a->hp_y >> 9);   /* passe-haut ~14 Hz : retirer le continu */

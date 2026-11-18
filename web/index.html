@@ -35,6 +35,10 @@
   a { color:var(--acc); }
   .hint { color:var(--acc); margin:0 0 10px; font-size:.9rem; }
   ol { margin:6px 0 10px 20px; padding:0; color:var(--dim); }
+  [hidden] { display:none !important; }
+  table.keys { border-collapse:collapse; font-size:.9rem; color:var(--dim); margin:6px 0; }
+  table.keys td { padding:3px 10px 3px 0; vertical-align:top; }
+  table.keys td:first-child { color:var(--text); white-space:nowrap; }
 </style>
 </head>
 <body>
@@ -51,12 +55,17 @@
     <div id="libRow" hidden style="margin-top:10px">
       <progress id="libBar" max="1" value="0" style="width:100%"></progress>
       <p class="sub" id="libText" style="margin:4px 0 0"></p>
+      <details id="libDetails" style="margin-top:6px">
+        <summary>Morceaux dans le FM-1</summary>
+        <div id="libList" style="margin:8px 0"></div>
+        <button class="ghost" id="libDel" disabled>Retirer la sélection</button>
+      </details>
     </div>
   </section>
 
   <section>
     <h2>Lecteur Mega Drive · Master System · Game Gear · Game Boy · NES</h2>
-    <p class="sub" style="margin:0 0 10px">Avec ROMsounds sur le FM-1 : choisis un fichier VGM (ou VGZ) de musique Mega Drive, Master System, Game Gear, Game Boy ou NES, puis envoie-le. Le FM-1 le joue aussitôt et le garde en mémoire, même éteint (environ 290 Ko pour la bibliothèque ; les plus anciens laissent la place). Sur le FM-1 : OCT− / OCT+ ou SELECT pour changer de morceau, REC maintenu 2 s pour en retirer un.</p>
+    <p class="sub" style="margin:0 0 10px">Avec ROMsounds sur le FM-1 : choisis un fichier VGM (ou VGZ) de musique Mega Drive, Master System, Game Gear, Game Boy ou NES, puis envoie-le. Le FM-1 le joue aussitôt et le garde en mémoire, même éteint (environ 290 Ko pour la bibliothèque). S’il manque de la place, la page te demande quels morceaux retirer (liste « Morceaux dans le FM-1 », en haut). Sur le FM-1 : OCT− / OCT+ ou SELECT pour changer de morceau, REC maintenu 2 s pour en retirer un.</p>
     <div class="row">
       <input type="file" id="vgmFile" accept=".vgm,.vgz,.zip" class="grow">
       <button id="vgmSend" disabled>Envoyer au FM-1</button>
@@ -64,8 +73,26 @@
     <div class="row" id="vgmPickRow" hidden>
       <select id="vgmPick" class="grow" aria-label="Morceau du pack"></select>
     </div>
+    <p class="hint" id="vgmPlan" hidden></p>
     <progress id="vgmBar" max="100" value="0" hidden></progress>
     <pre id="vgmLog">Aucun fichier.</pre>
+    <details style="margin-top:10px">
+      <summary>Effets sur le FM-1</summary>
+      <p class="sub" style="margin:8px 0 6px">Pendant la lecture, en direct. Les effets restent d’un morceau à l’autre ; HOME remet tout à zéro. L’écran affiche le réglage quand tu tournes une molette, et en bas ceux qui sont en route.</p>
+      <table class="keys">
+        <tr><td>Touches du clavier</td><td>Couper / remettre une voix (de gauche à droite). Mega Drive : FM 1 à 6, DAC (batterie), PSG 1 à 3, bruit. Master System, Game Gear : PSG 1 à 3, bruit. Game Boy : carré 1, carré 2, onde, bruit. NES : carré 1, carré 2, triangle, bruit, DPCM. Une touche allumée = une voix qui joue.</td></tr>
+        <tr><td>SEL + touche</td><td>Cette voix seule (solo) ; recommencer : toutes les voix.</td></tr>
+        <tr><td>Molette 1 (KNOB 1)</td><td>Tempo, de 25 % à 200 %, sans changer la hauteur.</td></tr>
+        <tr><td>Molette 2 (KNOB 2)</td><td>Hauteur, en demi-tons, sans changer le tempo (−12 à +12 ; Mega Drive : jusqu’à +5, le calcul monte vite).</td></tr>
+        <tr><td>Molette 3 (KNOB 3)</td><td>Filtre : à gauche passe-bas (son étouffé), à droite passe-haut (son fin), au milieu éteint.</td></tr>
+        <tr><td>Molette 4 (KNOB 4)</td><td>Écho (0 à 10).</td></tr>
+        <tr><td>ALGORITHM</td><td>Temps de l’écho et de la boucle (50 à 550 ms).</td></tr>
+        <tr><td>PRESETS</td><td>Grain : son de plus en plus « 8 bits » (0 à 12).</td></tr>
+        <tr><td>FX maintenu</td><td>Boucle : rejoue en boucle le dernier instant tant que tu tiens ; au relâché, le morceau reprend où il en est.</td></tr>
+        <tr><td>HOME</td><td>Remettre tous les effets à zéro.</td></tr>
+      </table>
+      <p class="sub" style="margin:0">Écho et boucle : pour les morceaux de moins de 170 Ko (presque tous).</p>
+    </details>
     <details style="margin-top:10px">
       <summary>Où trouver des musiques ?</summary>
       <p class="sub" style="margin:8px 0 6px">Les sites ci-dessous proposent les bandes son de jeux au format VGM, souvent en « packs » .zip d’un jeu entier : choisis directement le .zip ici, puis le morceau dans la liste.</p>
@@ -193,15 +220,73 @@ async function queryLib(dev) {
   } finally { dev.link.input.removeEventListener('midimessage', on); }
   return got[121] === undefined ? null : { count: got[119] || 0, used: got[120] || 0, total: got[121] };
 }
+/* la liste des morceaux (firmware récent) : SysEx 05 -> un SysEx 0x15 par morceau, puis 0x16 */
+async function fetchLib(dev) {
+  const frames = [];
+  let done;
+  const wait = new Promise(r => { done = r; });
+  const on = m => { const d = m.data; if (d[0] === 0xF0 && d[1] === 0x7D && d[2] === 0x52 && d[3] === 0x53) { frames.push([...d]); if (d[4] === 0x16) done(); } };
+  dev.link.input.addEventListener('midimessage', on);
+  try {
+    if (!dev.link.send([0xF0, 0x7D, 0x52, 0x53, 0x05, 0xF7])) return null;
+    await Promise.race([wait, new Promise(r => setTimeout(r, 2500))]);
+  } finally { dev.link.input.removeEventListener('midimessage', on); }
+  return RSVGM.libFromFrames(frames);
+}
+let libState = null;
+const libSel = new Set();                        // CRC des morceaux cochés
+const selected = st => st && st.entries ? st.entries.filter(e => libSel.has(e.crc)) : [];
 function showLib(st) {
   const row = $('libRow');
-  if (!st) { row.hidden = true; return; }
+  libState = st;
+  if (!st) { row.hidden = true; planVgm(); return; }
   row.hidden = false;
+  const list = $('libList');
+  $('libDetails').hidden = !st.entries;
+  if (st.entries) {
+    for (const c of [...libSel]) if (!st.entries.some(e => e.crc === c)) libSel.delete(c);
+    list.replaceChildren(...st.entries.map(e => {
+      const l = document.createElement('label'), c = document.createElement('input');
+      l.className = 'ok'; l.style.margin = '0 0 6px';
+      c.type = 'checkbox'; c.checked = libSel.has(e.crc);
+      c.addEventListener('change', () => { if (c.checked) libSel.add(e.crc); else libSel.delete(e.crc); planVgm(); });
+      const t = document.createElement('span');
+      t.textContent = (e.index === st.cur ? '▶ ' : '') + (e.title || '(sans titre)') + (e.game ? ' — ' + e.game : '') + (e.sys ? ' · ' + e.sys : '') + ' · ' + e.nsect * 4 + ' Ko';
+      l.append(c, ' ', t);
+      return l;
+    }));
+    if (!st.entries.length) list.textContent = 'Aucun morceau.';
+  }
+  planVgm();
   if (!st.total) { $('libBar').value = 0; $('libText').textContent = 'Bibliothèque indisponible (mémoire flash non reconnue) : les morceaux sont joués sans être gardés.'; return; }
   $('libBar').max = st.total; $('libBar').value = st.used;
   const n = st.count;
   $('libText').textContent = 'Bibliothèque : ' + (n ? n + ' morceau' + (n > 1 ? 'x' : '') : 'vide') + ' · ' + st.used * 4 + ' Ko utilisés · '
     + (st.total - st.used) * 4 + ' Ko libres sur ' + st.total * 4 + ' Ko';
+}
+
+/* la place pour le morceau choisi : faut-il en retirer ? (la liste dit lesquels) */
+function planVgm() {
+  const el = $('vgmPlan'), st = libState;
+  let send = 'Envoyer au FM-1';
+  el.hidden = true;
+  if (vgm && st && st.total && st.entries) {
+    const sel = selected(st), pl = RSVGM.libPlan(st, vgm.blob, sel);
+    if (pl.dup) { el.textContent = 'Ce morceau est déjà dans le FM-1 : il sera seulement joué.'; el.hidden = false; }
+    else if (pl.tooBig) { el.textContent = 'Plus gros que la bibliothèque du FM-1 : il sera joué sans être gardé.'; el.hidden = false; }
+    else if (pl.deficit || pl.full) {
+      const parts = [];
+      if (pl.deficit) parts.push('il faut libérer ' + pl.deficit * 4 + ' Ko (' + pl.need * 4 + ' Ko pour ce morceau, ' + pl.free * 4 + ' Ko libres)');
+      if (pl.full) parts.push('la bibliothèque a déjà ' + RSVGM.LIB_MAX + ' morceaux');
+      el.textContent = 'Pas assez de place : ' + parts.join(', ') + '. ' + (pl.ok ? (sel.length > 1 ? sel.length + ' morceaux cochés seront retirés' : '1 morceau coché sera retiré') + ' avant l’envoi.'
+        : 'Coche dans « Morceaux dans le FM-1 » (en haut) ceux à retirer' + (sel.length ? ' (pas encore assez).' : '.'));
+      el.hidden = false;
+      $('libDetails').open = true;
+      if (pl.ok) send = 'Retirer ' + sel.length + ' et envoyer';
+    }
+  }
+  $('vgmSend').textContent = send;
+  ready();
 }
 
 async function detect() {
@@ -213,7 +298,7 @@ async function detect() {
     if (!$('dot').classList.contains('on')) setState('Recherche…', 'busy');
     const dev = await up.find();
     if (!dev) { showLib(null); setState('Non détecté (ports vus : ' + ([...access.inputs.values()].filter(p => p.state === 'connected').map(p => p.name).join(', ') || 'aucun') + ')'); return; }
-    try { showLib(isRs(dev.id) ? await queryLib(dev) : null); } catch (e) { showLib(null); }
+    try { showLib(isRs(dev.id) ? (await fetchLib(dev)) || await queryLib(dev) : null); } catch (e) { showLib(null); }
     dev.link.close();
     setState(dev.id.loader ? 'En mode mise à jour (' + dev.id.text + ') : relance l’installation pour la terminer' : label(dev.id.text), 'on');
     if (expected && !dev.id.loader) {
@@ -235,6 +320,7 @@ function ready() {
   $('fileInstall').disabled = busy || !okBox.checked || !filePkg;
   file.disabled = busy; $('detect').disabled = busy;
   $('vgmSend').disabled = busy || !vgm; $('vgmFile').disabled = busy; $('vgmPick').disabled = busy;
+  $('libDel').disabled = busy || !libSel.size;
   $('hint').hidden = okBox.checked;
 }
 
@@ -332,6 +418,7 @@ async function showVgm(u, name) {
     if (v.blob.length > VGM_MAX) throw new Error('trop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus)');
     vgm = v;
     $('vgmLog').textContent = lines.filter(Boolean).join('\n');
+    planVgm();
   } catch (e) { $('vgmLog').textContent = 'Fichier refusé : ' + (e.message || e); }
   ready();
 }
@@ -372,22 +459,16 @@ async function sendVgm() {
     log('Recherche du FM-1…');
     dev = await up.find(id => !id.loader && /^FM-1_95\d$/.test(id.text));
     if (!dev) throw new Error('ROMsounds ne répond pas : installe ROMsounds sur le FM-1 (plus bas), puis recommence.');
-    const acks = [];
-    let wake = null;
-    onMsg = m => { const d = m.data; if (d.length === 3 && d[0] === 0xBF && (d[1] === 117 || d[1] === 118)) { acks.push([d[1], d[2]]); if (wake) wake(); } };
-    dev.link.input.addEventListener('midimessage', onMsg);
-    const waitAck = async (cc, ok, ms) => {
-      const end = Date.now() + ms;
-      for (;;) {
-        const i = acks.findIndex(a => a[0] === 117 && a[1] >= 0x40 || a[0] === cc && ok(a[1]));
-        if (i >= 0) { const a = acks.splice(0, i + 1).pop(); if (a[0] === 117 && a[1] >= 0x40) throw new Error(VGM_ERR[a[1]] || 'refusé (' + a[1] + ')'); return a[1]; }
-        const left = end - Date.now();
-        if (left <= 0) return null;
-        await new Promise(r => { wake = r; setTimeout(r, left); });
-        wake = null;
-      }
-    };
-    const send = arr => { if (!dev.link.send(arr)) throw new Error('le FM-1 a été déconnecté'); };
+    const aw = ackWaiter(dev), { acks, waitAck, send } = aw;
+    onMsg = aw.on;
+    // la place : retirer d'abord les morceaux cochés si le nouveau n'entre pas
+    const st = await fetchLib(dev);
+    if (st && st.total && st.entries) {
+      showLib(st);
+      const sel = selected(st), pl = RSVGM.libPlan(st, vgm.blob, sel);
+      if (!pl.ok) { planVgm(); throw new Error('pas assez de place dans le FM-1 : coche dans « Morceaux dans le FM-1 » (en haut) les morceaux à retirer, puis renvoie.'); }
+      if (pl.deficit || pl.full) await removeOn(sel, aw, log);
+    }
     const fr = vgmFrames(vgm.blob, vgm.title, vgm.game, FM1OTA.pack7, vgm.sys);
     acks.length = 0;
     send(fr.begin);
@@ -406,7 +487,7 @@ async function sendVgm() {
     send(fr.end);
     log('Envoyé : le FM-1 enregistre le morceau dans sa mémoire…');
     if (await waitAck(117, v => v === 3, 30000) === null) throw new Error('le FM-1 n’a pas confirmé la fin de l’envoi');
-    try { showLib(await queryLib(dev)); } catch (e) { /* (la place reste celle d'avant) */ }
+    try { showLib((await fetchLib(dev)) || await queryLib(dev)); } catch (e) { /* (la place reste celle d'avant) */ }
     log('Envoyé en ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s : le FM-1 joue « ' + (vgm.title || 'le morceau') + ' » et l’a gardé en mémoire.\nPLAY : pause / lecture · REC : revenir au début · OCT− / OCT+ : morceau précédent / suivant.');
   } catch (e) {
     log('Échec : ' + (e.message || e));
@@ -416,6 +497,58 @@ async function sendVgm() {
   }
 }
 $('vgmSend').addEventListener('click', sendVgm);
+if (location.protocol === 'file:') window.RSPAGE = { showLib, planVgm, setVgm: v => { vgm = v; } };   // (essais hors ligne)
+
+/* les accusés de ROMsounds (CC 117 / 118 sur le canal 16), pour un envoi ou un retrait */
+function ackWaiter(dev) {
+  const acks = [];
+  let wake = null;
+  const on = m => { const d = m.data; if (d.length === 3 && d[0] === 0xBF && (d[1] === 117 || d[1] === 118)) { acks.push([d[1], d[2]]); if (wake) wake(); } };
+  dev.link.input.addEventListener('midimessage', on);
+  const waitAck = async (cc, ok, ms) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const i = acks.findIndex(a => a[0] === 117 && a[1] >= 0x40 || a[0] === cc && ok(a[1]));
+      if (i >= 0) { const a = acks.splice(0, i + 1).pop(); if (a[0] === 117 && a[1] >= 0x40) throw new Error(VGM_ERR[a[1]] || 'refusé (' + a[1] + ')'); return a[1]; }
+      const left = end - Date.now();
+      if (left <= 0) return null;
+      await new Promise(r => { wake = r; setTimeout(r, left); });
+      wake = null;
+    }
+  };
+  const send = arr => { if (!dev.link.send(arr)) throw new Error('le FM-1 a été déconnecté'); };
+  return { acks, waitAck, send, on, stop: () => dev.link.input.removeEventListener('midimessage', on) };
+}
+async function removeOn(sel, aw, log) {             // retirer ces morceaux (par leur CRC), un à un
+  for (const e of sel) {
+    log('Retrait de « ' + (e.title || 'sans titre') + ' »…');
+    aw.acks.length = 0;
+    aw.send([0xF0, 0x7D, 0x52, 0x53, 0x06, ...RSVGM.b35(e.crc), 0xF7]);
+    if (await aw.waitAck(117, v => v === 6, 8000) === null) throw new Error('le FM-1 n’a pas confirmé le retrait de « ' + e.title + ' »');
+    libSel.delete(e.crc);
+  }
+}
+$('libDel').addEventListener('click', async () => {
+  if (busy || !libSel.size) return;
+  const log = t => { $('libText').textContent = t; };
+  let acc, dev = null, aw = null;
+  try { acc = await midi(); } catch (e) { log(e.message); return; }
+  busy = true; ready();
+  try {
+    dev = await new FM1OTA.Updater(acc).find(isRs);
+    if (!dev) throw new Error('ROMsounds ne répond pas');
+    aw = ackWaiter(dev);
+    const st = await fetchLib(dev);
+    if (!st || !st.entries) throw new Error('cette version de ROMsounds ne sait pas retirer depuis la page : réinstalle ROMsounds');
+    await removeOn(selected(st), aw, log);
+    showLib(await fetchLib(dev));
+  } catch (e) { log('Échec : ' + (e.message || e)); }
+  finally {
+    if (aw) aw.stop();
+    if (dev) dev.link.close();
+    busy = false; ready();
+  }
+});
 
 file.addEventListener('change', async () => {
   filePkg = null; bar.hidden = true;

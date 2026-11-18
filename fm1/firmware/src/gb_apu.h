@@ -30,6 +30,7 @@ typedef struct {
     uint8_t regs[0x30];
     uint8_t wave[32];                           /* 4 bits chacun */
     gb_ch_t c[4];
+    uint8_t mute;                               /* ROMsounds (effets) : bit = voie coupée */
 } gb_t;
 
 static const uint8_t GB_DUTY[4] = {0x01, 0x81, 0x87, 0x7E};   /* 12,5 %, 25 %, 50 %, 75 % (bit 7 : premier pas) */
@@ -182,6 +183,7 @@ static void gb_render(gb_t *g, int32_t *out, uint32_t n)
             if (ch < 2u) s[ch] = GB_DUTY[c->duty] >> (7u - c->pos) & 1u ? (int32_t)c->env_vol : -(int32_t)c->env_vol;
             else if (ch == 2u) s[ch] = c->vol ? ((int32_t)g->wave[c->pos] * 2 - 15) >> (c->vol - 1u) : 0;
             else s[ch] = c->lfsr & 1u ? -(int32_t)c->env_vol : (int32_t)c->env_vol;
+            if (g->mute >> ch & 1u) s[ch] = 0;
         }
         for (ch = 0; ch < 4u; ch++) {
             if (g->nr51 >> (4u + ch) & 1u) l += s[ch];

@@ -1,0 +1,4 @@
+# ROMsounds, effets : FM 1 à 6 coupées (touches 0-5) pendant l accord, sur build/test.rsm
+0 keys 0x3F
+100 keys 0
+3000 end

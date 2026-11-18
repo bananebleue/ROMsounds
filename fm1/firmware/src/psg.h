@@ -26,6 +26,7 @@ typedef struct {
     uint8_t width;              /* largeur du registre de bruit */
     uint8_t stereo;             /* Game Gear : bits 4-7 gauche, 0-3 droite (0xFF : tout partout) */
     uint16_t lfsr, feedback;
+    uint8_t mute;               /* ROMsounds (effets) : bit c = voie c coupée (3 : le bruit) */
 } psg_t;
 
 /* 2 dB par pas ; voie au maximum : 4032, le niveau du PSG face au YM2612 dans libvgm (vgm2wav), mesuré sur des pistes
@@ -81,6 +82,7 @@ static void psg_render(psg_t *p, int32_t *out, uint32_t n)
                 v = p->out[c] ? PSG_VOL[p->vol[c]] : -PSG_VOL[p->vol[c]];
             else                                /* période 0 ou 1 : sortie haute continue (sert aux samples par volume) */
                 v = PSG_VOL[p->vol[c]];
+            if (p->mute >> c & 1u) v = 0;
             if (st >> (4u + c) & 1u) l += v;
             if (st >> c & 1u) r += v;
         }
@@ -96,7 +98,7 @@ static void psg_render(psg_t *p, int32_t *out, uint32_t n)
                     p->lfsr = (uint16_t)((p->lfsr >> 1) | fb << (p->width - 1u));
                 }
             }
-            v = p->lfsr & 1u ? PSG_VOL[p->vol[3]] : -PSG_VOL[p->vol[3]];
+            v = p->mute & 8u ? 0 : p->lfsr & 1u ? PSG_VOL[p->vol[3]] : -PSG_VOL[p->vol[3]];
             if (st >> 7 & 1u) l += v;
             if (st >> 3 & 1u) r += v;
         }

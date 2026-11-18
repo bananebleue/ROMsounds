@@ -1,0 +1,3 @@
+# ROMsounds, effets : tempo 200 % (KNOB1 = encodeur 2) dès le début, sur build/gb.rsm (voie 1 440 Hz, voie 2 880 Hz, onde 262 Hz : deux fois plus vite)
+0 enc 2 20
+3000 end

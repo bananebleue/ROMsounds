@@ -1,0 +1,7 @@
+# ROMsounds, effets : SEL (bouton 3) + touche 7 : PSG 1 seule, sur build/test.rsm
+0 btndown 3
+50 keys 0x80
+150 keys 0
+200 btnup 3
+2500 shot
+3000 end

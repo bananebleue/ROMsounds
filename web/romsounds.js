@@ -13,7 +13,9 @@
 const VGM_MAX = 268 * 1024;              // place du morceau dans le FM-1 (firmware/src/romsounds.c : ARENA)
 const VGM_ERR = { 0x41: 'fichier trop gros pour le FM-1', 0x42: 'données hors du fichier', 0x43: 'données incomplètes',
   0x44: 'fichier incomplet', 0x45: 'contrôle CRC faux', 0x49: 'ce n’est pas un fichier VGM', 0x4A: 'fichier VGM trop court',
-  0x4B: 'ni YM2612 ni SN76489 dans ce fichier', 0x4C: 'préparation du morceau illisible' };
+  0x4B: 'ni YM2612 ni SN76489 dans ce fichier', 0x4C: 'préparation du morceau illisible',
+  0x46: 'morceau introuvable dans le FM-1 (la liste a changé : recommence)' };
+const LIB_MAX = 40;                      // morceaux au plus dans la bibliothèque du FM-1 (firmware : LIB_MAX)
 // horloges des autres puces dans l'en-tête (spécification VGM 1.71)
 const OTHER_CHIPS = [0x30, 0x38, 0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x58, 0x5C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x74, 0x88, 0x8C, 0x90, 0x98, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
 const rd32 = (u, i) => (u[i] | u[i + 1] << 8 | u[i + 2] << 16 | u[i + 3] << 24) >>> 0;
@@ -202,6 +204,35 @@ async function packVgm(u) {
   return Object.assign(v, { blob, pcmLen: P.length, aLen: A.length, bLen: B.length, dacStream, raw: u.length });
 }
 
+/** La bibliothèque du FM-1, d'après ses SysEx 0x15 (un par morceau) et 0x16 (la place, en secteurs de 4 Ko) :
+ * { entries: [{ index, nsect, size, crc, title, game, sys }], count, used, total, cur (127 : aucun) } */
+const rd35 = (d, i) => (d[i] + d[i + 1] * 128 + d[i + 2] * 16384 + d[i + 3] * 2097152 + (d[i + 4] & 15) * 268435456) >>> 0;
+function libFromFrames(frames) {
+  const entries = [];
+  let end = null;
+  for (const d of frames) {
+    if (d[0] !== 0xF0 || d[1] !== 0x7D || d[2] !== 0x52 || d[3] !== 0x53) continue;
+    if (d[4] === 0x15 && d.length >= 18) {
+      const str = [];
+      let cur = '';
+      for (let i = 17; i < d.length - 1; i++) { if (d[i]) cur += String.fromCharCode(d[i]); else { str.push(cur); cur = ''; } }
+      str.push(cur);
+      entries.push({ index: d[5], nsect: d[6], size: rd35(d, 7), crc: rd35(d, 12), title: str[0] || '', game: str[1] || '', sys: str[2] || '' });
+    } else if (d[4] === 0x16 && d.length >= 10) end = { count: d[5], used: d[6], total: d[7], cur: d[8] };
+  }
+  return end && { entries, ...end };
+}
+/** La place pour un morceau (blob) si l'on retire sel (des entrées de la liste) :
+ * { need, free, deficit (secteurs à libérer), full (déjà LIB_MAX morceaux), dup (déjà dans le FM-1), tooBig, ok } */
+function libPlan(st, blob, sel = []) {
+  const need = Math.ceil(blob.length / 4096), crc = crc32(blob), free = st.total - st.used;
+  const dup = st.entries.some(e => e.crc === crc && e.size === blob.length);
+  const deficit = dup ? 0 : Math.max(0, need - free), full = !dup && st.count >= LIB_MAX, tooBig = need > st.total;
+  const freed = sel.reduce((a, e) => a + e.nsect, 0);
+  const ok = dup || tooBig || (freed >= deficit && st.count - sel.length < LIB_MAX);
+  return { need, free, deficit, full, dup, tooBig, ok };
+}
+
 /** Un .zip (les packs de VGMRips) : [{ name, open() -> Promise<Uint8Array> }] pour ses .vgm / .vgz, dans l'ordre du pack.
  * Méthodes 0 (stocké) et 8 (deflate, décompressé par DecompressionStream). */
 function zipList(z) {
@@ -245,6 +276,6 @@ function vgmFrames(body, title, game, pack7, sys) {
            end: [0xF0, 0x7D, 0x52, 0x53, 0x03, ...b35(crc32(body)), 0xF7] };
 }
 
-const API = { VGM_MAX, VGM_ERR, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf };
+const API = { VGM_MAX, VGM_ERR, LIB_MAX, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf, libFromFrames, libPlan, b35 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API; else root.RSVGM = API;
 })(typeof self !== 'undefined' ? self : this);

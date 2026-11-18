@@ -1,0 +1,4 @@
+# ROMsounds, effets : grain 12 (PRESETS = encodeur 6), sur build/gb.rsm
+0 enc 6 12
+500 shot
+1000 end
