@@ -233,18 +233,23 @@ def check(img, syms, dis, rt):
         errors.append(f".ram_text contains calls: {rt_calls[:3]}")
     else:
         notes.append(f".ram_text: {len([ln for ln in rt.splitlines() if LINE.match(ln)])} insns, no calls")
-    fn = "?"
+    funcs = sorted((int(m.group(1), 16), int(m.group(2), 16), m.group(3)) for m in
+                   re.finditer(r"^([0-9a-f]+) .{7} \S+\s+([0-9a-f]+) (\S+)$", syms, re.M))
+    def where(addr):                # the symbol around an address (for the messages)
+        best = "?"
+        for a0, n, name in funcs:
+            if a0 <= addr < a0 + max(n, 1):
+                best = name
+        return best
     for ln in dis.splitlines():     # nothing may call or load an address in the chip ROM
-        fm = re.match(r"^[0-9a-f]+ <([^>]+)>:", ln)
-        if fm:
-            fn = fm.group(1)
         mm = LINE.match(ln)
         if not mm:
             continue
         for v in re.findall(r"= (-?\d+) <|call -?\d+ <[^:>]*: ([0-9a-f]+) >", mm.group(3)):
             val = (int(v[0]) & 0xFFFFFFFF) if v[0] else int(v[1], 16) & 0xFFFFFFFF
             if 0xFFC00000 <= val < 0xFFD00000:
-                errors.append(f"reference to ROM address {val:#010x} in {fn}: {ln.strip()[:100]}")
+                am = re.match(r"\s*([0-9a-f]+):", ln)
+                errors.append(f"reference to ROM address {val:#010x} in {where(int(am.group(1), 16)) if am else '?'}")
     if len(img) > APP_SLOT:
         errors.append(f"image {len(img)} B exceeds the app slot")
 
