@@ -176,7 +176,7 @@
 
   <section class="win player" aria-labelledby="playerTitle">
     <h2 id="playerTitle">Lecteur</h2>
-    <p class="sub">Choisis un fichier VGM, VGZ, YM (Atari ST) ou MOD (Amiga), ou un pack .zip, puis envoie-le : le FM-1 le joue aussitôt et le garde en mémoire, même éteint. La molette SELECT change de morceau, REC maintenu 2 s en retire un.</p>
+    <p class="sub">Choisis un fichier VGM, VGZ, YM (Atari ST) ou MOD (Amiga), ou un pack .zip, puis envoie-le : le FM-1 le garde en mémoire, même éteint, et l’affiche prêt à jouer (PLAY le lance). La molette SELECT change de morceau, REC maintenu 2 s en retire un.</p>
     <div class="row">
       <input type="file" id="vgmFile" accept=".vgm,.vgz,.zip,.ym,.mod,.lha,.lzh" class="grow">
     </div>
@@ -682,7 +682,7 @@ async function sendVgm() {
     log('Envoyé : le FM-1 enregistre le morceau dans sa mémoire…');
     if (await waitAck(117, v => v === 3, 30000) === null) throw new Error('le FM-1 n’a pas confirmé la fin de l’envoi');
     try { showLib((await fetchLib(dev)) || await queryLib(dev)); } catch (e) { /* (la place reste celle d'avant) */ }
-    log('Envoyé en ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s : le FM-1 joue « ' + (vgm.title || 'le morceau') + ' » et l’a gardé en mémoire.\nPLAY : pause / lecture · REC : revenir au début · OCT− / OCT+ : morceau précédent / suivant.');
+    log('Envoyé en ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s : le FM-1 a gardé « ' + (vgm.title || 'le morceau') + ' » en mémoire ; il est prêt, PLAY le lance.\nPLAY : pause / lecture · REC : revenir au début · OCT− / OCT+ : morceau précédent / suivant.');
   } catch (e) {
     log('Échec : ' + (e.message || e));
   } finally {

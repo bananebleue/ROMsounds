@@ -1064,6 +1064,7 @@ static void lib_send_list(void)                 /* 0x15 : n°, secteurs, taille,
 
 #ifdef DINGHY_HOST                              /* sur PC : ROMSOUNDS_RSM=a.rsm,b.rsm... : reçus comme depuis la page, un toutes
                                                  * les 3 s (ROMSOUNDS_EVERY ms), le premier au démarrage */
+static uint32_t rx_autoplay;                     /* (tests sur PC : ROMSOUNDS_RSM joue le morceau dès qu'il est chargé) */
 static void rs_host_load(void)
 {
     static uint32_t k, due;
@@ -1077,7 +1078,7 @@ static void rs_host_load(void)
     for (n = 0; list[i] && list[i] != ',' && n < sizeof f - 1u; ) f[n++] = list[i++];
     f[n] = 0;
     if (!n) return;
-    k++;
+    k++; rx_autoplay = 1;
     due = fm1_ms + (every ? (uint32_t)atoi(every) : 3000u);
     fp = fopen(f, "rb");
     if (!fp) return;
@@ -1147,6 +1148,10 @@ static void app_main(void)
                     else say("enregistre dans le FM-1");
                 }
                 loaded = 1; song_start(); underruns = 0; ack_cmd = 3; stat_req = 1;
+                playing = 0;                    /* prêt, à l'arrêt : PLAY le lance */
+#ifdef DINGHY_HOST
+                playing = rx_autoplay;
+#endif
             }
             draw_song();
             t_shown = 0;

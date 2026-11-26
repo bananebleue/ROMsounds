@@ -7,7 +7,7 @@ synthé M-VAVE FM-1. Fiche du projet : `bananebleue/Clodio`, `projets/extracteur
 
 Le firmware ROMsounds joue des musiques au format **VGM** : la page (section « Lecteur ») lit un fichier `.vgm` ou
 `.vgz`, le prépare (banque d'échantillons à part, musique compressée, flux DAC convertis) et l'envoie au FM-1 par USB.
-Le FM-1 le joue aussitôt et le **garde en mémoire flash** (bibliothèque d'environ 290 Ko, gardée après extinction).
+Le FM-1 le **garde en mémoire flash**, prêt à jouer (PLAY le lance) (bibliothèque d'environ 290 Ko, gardée après extinction).
 
 - YM2612 : le cœur de MAME / Genesis Plus GX 1.5.1 (via libvgm), porté pour le FM-1 ; ~60 % du temps de calcul.
 - SN76489 (PSG) : écrit pour ROMsounds ; bruit réglable (Sega, TI), stéréo Game Gear. DAC : banque PCM, 0x8n / 0xE0 ;
