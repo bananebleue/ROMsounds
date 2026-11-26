@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ROMsounds · le lecteur de musiques de jeux du FM-1</title>
 <meta name="theme-color" content="#14161a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ROMsounds">
 <script>
   /* le thème choisi (avant l'affichage : pas d'éclair de l'ancien) */
   try { const t = localStorage.getItem('romsounds-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) { /* (stockage indisponible) */ }
@@ -263,6 +268,9 @@
   </section>
 </main>
 
+<script>
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { /* (hors-ligne indisponible) */ });
+</script>
 <script src="fm1ota.js"></script>
 <script src="romsounds.js"></script>
 <script>
