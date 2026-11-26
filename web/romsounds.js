@@ -561,7 +561,7 @@ function lh5(src, outLen) {
     let i = 0;
     while (i < n) {
       let c = ptTable[bitbuf >> 8];
-      if (c >= NT) { let m = 1 << 7; do { c = bitbuf & m ? right[c] : left[c]; m >>= 1; } while (c >= NT); }
+      if (c >= NT) { let m = 1 << 7; do { c = bitbuf & m ? right[c] : left[c]; m >>= 1; if (!m) throw new Error('archive LHA corrompue'); } while (c >= NT); }
       fill(ptLen[c]);
       if (c <= 2) { c = c === 0 ? 1 : c === 1 ? get(4) + 3 : get(CBIT) + 20; while (c-- > 0) cLen[i++] = 0; }
       else cLen[i++] = c - 2;
@@ -576,12 +576,12 @@ function lh5(src, outLen) {
     block--;
     let j = cTable[bitbuf >> 4];
     if (j < NC) fill(cLen[j]);
-    else { fill(12); let m = 1 << 15; do { j = bitbuf & m ? right[j] : left[j]; m >>= 1; } while (j >= NC); fill(cLen[j] - 12); }
+    else { fill(12); let m = 1 << 15; do { j = bitbuf & m ? right[j] : left[j]; m >>= 1; if (!m) throw new Error('archive LHA corrompue'); } while (j >= NC); fill(cLen[j] - 12); }
     if (j < 256) { out[o++] = j; continue; }
     const len = j - 256 + 3;
     let p = ptTable[bitbuf >> 8];
     if (p < NP) fill(ptLen[p]);
-    else { fill(8); let m = 1 << 7; do { p = bitbuf & m ? right[p] : left[p]; m >>= 1; } while (p >= NP); fill(ptLen[p] - 8); }
+    else { fill(8); let m = 1 << 15; do { p = bitbuf & m ? right[p] : left[p]; m >>= 1; if (!m) throw new Error('archive LHA corrompue'); } while (p >= NP); fill(ptLen[p] - 8); }
     if (p) p = (1 << (p - 1)) + get(p - 1);
     for (let k = 0, from = o - p - 1; k < len && o < outLen; k++, from++) out[o++] = from >= 0 ? out[from] : 0x20;
   }

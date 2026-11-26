@@ -178,7 +178,7 @@
     <h2 id="playerTitle">Lecteur</h2>
     <p class="sub">Choisis un fichier VGM, VGZ, YM (Atari ST) ou MOD (Amiga), ou un pack .zip, puis envoie-le : le FM-1 le joue aussitôt et le garde en mémoire, même éteint. La molette SELECT change de morceau, REC maintenu 2 s en retire un.</p>
     <div class="row">
-      <input type="file" id="vgmFile" accept=".vgm,.vgz,.zip,.ym,.mod" class="grow">
+      <input type="file" id="vgmFile" accept=".vgm,.vgz,.zip,.ym,.mod,.lha,.lzh" class="grow">
     </div>
     <div class="row" id="vgmPickRow" hidden style="margin-top:10px">
       <select id="vgmPick" class="grow" aria-label="Morceau du pack"></select>
@@ -568,7 +568,10 @@ async function showVgm(u, name) {
   vgm = null; $('vgmBar').hidden = true;
   try {
     let raw = await RSVGM.gunzipIf(u);
-    if (RSVGM.isYm(raw)) raw = RSVGM.ymToVgm(raw);   // Atari ST (.ym) : rejoué en commandes AY / YM2149
+    if (raw.length > 8 && String.fromCharCode(...raw.subarray(2, 5)) === '-lh') {   // archive LHA : un .ym (Atari ST) ou un module (Amiga)
+      const inner = RSVGM.unlha(raw);
+      if (/^YM[2-6]/.test(String.fromCharCode(...inner.subarray(0, 3)))) raw = RSVGM.ymToVgm(inner); else raw = inner;
+    } else if (RSVGM.isYm(raw)) raw = RSVGM.ymToVgm(raw);   // Atari ST (.ym) : rejoué en commandes AY / YM2149
     const v = RSVGM.isMod(raw, name) ? RSVGM.packMod(raw, name) : await packVgm(raw);   // Amiga (.mod) : le module tel quel
     const f = { name };
     const lines = [(v.title || f.name) + (v.game ? ' — ' + v.game : ''), (v.system ? v.system + ' · ' : '') + (v.author || '')];
