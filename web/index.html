@@ -154,6 +154,7 @@
   <div class="status">
     <span class="state"><span class="dot" id="dot"></span><span id="state">Non détecté</span></span>
     <button class="ghost" id="detect">Détecter le FM-1</button>
+    <button class="ghost" id="install" hidden>Installer l’application</button>
     <label class="state" for="theme">Thème
       <select id="theme"><option value="graphite">Graphite et orange</option><option value="ambre">Ambre, écran phosphore</option><option value="megadrive">Mega Drive</option><option value="gameboy">Game Boy</option><option value="neogeo">Neo-Geo</option><option value="soundtest">Sound test (bleu)</option></select>
     </label>
@@ -268,6 +269,22 @@
   </section>
 </main>
 
+<script>
+  /* bouton « Installer » : seulement si le navigateur le propose et que l'appli n'est pas déjà installée */
+  (() => {
+    const btn = document.getElementById('install');
+    let ev = null;
+    const dejaInstallee = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+    window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); ev = e; if (!dejaInstallee()) btn.hidden = false; });
+    window.addEventListener('appinstalled', () => { ev = null; btn.hidden = true; });
+    btn.addEventListener('click', async () => {
+      if (!ev) return;
+      ev.prompt();
+      await ev.userChoice.catch(() => {});
+      ev = null; btn.hidden = true;
+    });
+  })();
+</script>
 <script>
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { /* (hors-ligne indisponible) */ });
 </script>
