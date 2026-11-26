@@ -194,6 +194,7 @@
       <span class="sub grow" id="vgmBpmNote" style="margin:0"></span>
     </div>
     <div class="row" style="margin-top:12px">
+      <button class="ghost" id="vgmShrink" hidden>Réduire pour le FM-1</button>
       <button id="vgmSend" disabled>Envoyer au FM-1</button>
     </div>
     <p class="hint" id="vgmPlan" hidden></p>
@@ -564,15 +565,16 @@ const { VGM_MAX, VGM_ERR, packVgm, vgmFrames } = RSVGM;
 const mmss = n => Math.floor(n / 60) + ':' + String(Math.floor(n % 60)).padStart(2, '0');
 let vgm = null;
 let pack = [];                                   // les morceaux d'un .zip (pack VGMRips)
-async function showVgm(u, name) {
-  vgm = null; $('vgmBar').hidden = true;
+let modSrc = null;                               // module trop gros, en attente de « Réduire » : { u, name }
+async function showVgm(u, name, shrunk) {
+  vgm = null; $('vgmBar').hidden = true; $('vgmShrink').hidden = true; if (!shrunk) modSrc = null;
   try {
     let raw = await RSVGM.gunzipIf(u);
     if (raw.length > 8 && String.fromCharCode(...raw.subarray(2, 5)) === '-lh') {   // archive LHA : un .ym (Atari ST) ou un module (Amiga)
       const inner = RSVGM.unlha(raw);
       if (/^YM[2-6]/.test(String.fromCharCode(...inner.subarray(0, 3)))) raw = RSVGM.ymToVgm(inner); else raw = inner;
     } else if (RSVGM.isYm(raw)) raw = RSVGM.ymToVgm(raw);   // Atari ST (.ym) : rejoué en commandes AY / YM2149
-    const v = RSVGM.isMod(raw, name) ? RSVGM.packMod(raw, name) : await packVgm(raw);   // Amiga (.mod) : le module tel quel
+    const v = shrunk ? RSVGM.packMod(shrunk.u, name, shrunk.sh) : RSVGM.isMod(raw, name) ? RSVGM.packMod(raw, name) : await packVgm(raw);   // Amiga (.mod) : le module tel quel (ou réduit)
     const f = { name };
     const lines = [(v.title || f.name) + (v.game ? ' — ' + v.game : ''), (v.system ? v.system + ' · ' : '') + (v.author || '')];
     lines.push(v.isMod ? 'Paula (Amiga) : module ' + v.nch + ' voies' : 'Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489', v.gb && 'Game Boy', v.nes && 'NES 2A03', v.ay && (v.ayType & 0xF0 ? 'YM2149' : 'AY-3-8910'), v.opnb && (v.opnbType ? 'YM2610B' : 'YM2610') + ' (FM, SSG, ADPCM)', v.opm && 'YM2151', v.opn && 'YM2203', v.oki && 'OKI MSM6295', v.opl && !v.opnb && (v.opl3 ? 'YMF262 (OPL3, joué en OPL2)' : v.oplType === 2 ? 'YM3526' : 'YM3812 (AdLib)')].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
@@ -581,7 +583,14 @@ async function showVgm(u, name) {
     if (v.adpcm !== undefined) lines.push('Échantillons ADPCM : ' + kb(v.adpcm) + ' gardés (ceux que le morceau joue) sur ' + kb(v.adpcmRom) + ' de ROM.' + (v.blob.length > 140 * 1024 ? ' Plus de 140 Ko : écho, boucle, beat roll et backspin indisponibles pour ce morceau.' : ''));
     if (v.okiRom !== undefined) lines.push('OKI MSM6295 : ' + v.okiPhrases + ' phrases jouées, ' + kb(v.okiRom) + ' d’échantillons gardés.');
     if (v.dacStream) lines.push('Flux DAC (VGM 1.60) : convertis par la page pour le FM-1.');
-    if (v.blob.length > VGM_MAX) throw new Error('trop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus)');
+    if (shrunk) lines.push('Réduit pour le FM-1 : ' + shrunk.notes.join(' ; ') + '. Écoute l’aperçu avant d’envoyer.');
+    if (v.blob.length > VGM_MAX && v.isMod && !shrunk) {
+      modSrc = { u: raw, name };
+      $('vgmLog').textContent = lines.filter(Boolean).join('\n') + '\n\nTrop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus). « Réduire pour le FM-1 » retire ce que le morceau ne joue jamais, puis baisse la qualité des plus gros échantillons, juste ce qu’il faut.';
+      $('vgmShrink').hidden = false;
+      ready(); return;
+    }
+    if (v.blob.length > VGM_MAX) throw new Error('trop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus)' + (shrunk ? ' même réduit' : ''));
     pvStop(); pvF0 = 0;
     vgm = v;
     $('vgmLog').textContent = lines.filter(Boolean).join('\n');
@@ -593,6 +602,12 @@ async function showVgm(u, name) {
   } catch (e) { $('vgmLog').textContent = 'Fichier refusé : ' + (e.message || e); }
   ready();
 }
+
+$('vgmShrink').addEventListener('click', () => {
+  if (!modSrc) return;
+  const r = RSVGM.shrinkMod(modSrc.u, VGM_MAX);
+  showVgm(modSrc.u, modSrc.name, r);
+});
 
 $('vgmFile').addEventListener('change', async () => {
   const f = $('vgmFile').files && $('vgmFile').files[0];
@@ -646,9 +661,9 @@ async function sendVgm() {
     const fr = vgmFrames(vgm.blob, vgm.title, vgm.game, FM1OTA.pack7, vgm.sys);
     acks.length = 0;
     send(fr.begin);
-    const hello = await waitAck(117, v => v === 1 || v === 2 || v >= 4 && v <= 10, 2000);
+    const hello = await waitAck(117, v => v === 1 || v === 2 || v >= 4 && v <= 11, 2000);
     if (hello === null) throw new Error('le FM-1 ne répond pas au début de l’envoi');
-    if (hello !== 10) throw new Error('ROMsounds sur le FM-1 est une ancienne version, qui ne lit pas ce format : réinstalle ROMsounds (section « Installer un firmware »), puis renvoie le morceau.');
+    if (hello !== 11) throw new Error('ROMsounds sur le FM-1 est une ancienne version, qui ne lit pas ce format : réinstalle ROMsounds (section « Installer un firmware »), puis renvoie le morceau.');
     const n = fr.data.length, t0 = Date.now();
     for (let seq = 0; seq < n; seq++) {
       const frame = fr.data[seq];

@@ -164,6 +164,13 @@ jobs:
           node ../tests/wav_check.js build/host/romsounds.wav 0.2-1.9:~259 2.0-3.8:~518 4.0-5.7:1000 7.2-7.4:~259 7.5-7.65:0 7.75-8.4:~259
           node ../tests/preview_test.js build/mod.rsm 8.4 build/pv_mod.wav
           node ../tests/wav_compare.js build/pv_mod.wav build/host/romsounds.wav 1 8 1
+          # module réduit par la page (RSMD 2 : échantillon gardé 1 point sur 2) : mêmes hauteurs, même son dans la page
+          node ../tests/make_test_mod.js build/testl.mod long
+          node -e 'const R=require("../web/romsounds.js"),fs=require("fs"),m=new Uint8Array(fs.readFileSync("build/testl.mod")),r=R.shrinkMod(m,R.packMod(m,"t").blob.length-10);if(r.sh[1]!==1||!r.fits)throw new Error("réduction");fs.writeFileSync("build/mods.rsm",R.packMod(r.u,"t",r.sh).blob)'
+          ROMSOUNDS_RSM=build/mods.rsm sh tests/run_host.sh build/f85.txt > /dev/null
+          node ../tests/wav_check.js build/host/romsounds.wav 0.2-1.9:~259 2.0-3.8:~518 4.0-5.7:1000 7.2-7.4:~259 7.5-7.65:0 7.75-8.4:~259
+          node ../tests/preview_test.js build/mods.rsm 8.4 build/pv_mods.wav
+          node ../tests/wav_compare.js build/pv_mods.wav build/host/romsounds.wav 1 8 1
           # la bibliothèque vue par la page : liste (SysEx 05), place pour D, retrait de B (06)
           node ../tests/lib_test.js
           # effets : tempo 200 % (fréquences de build/gb.rsm deux fois plus tôt), voix coupées, solo (SEL + touche),
@@ -185,7 +192,7 @@ jobs:
           # attribution par la page (SysEx 07, relue par 08) : le filtre sur KNOB1
           M="03 00 00 00 00 00 01 02 03 0B 07 06 0A 00 08 09 04 05"
           ROMSOUNDS_SX="0:7D 52 53 07 $M;100:7D 52 53 08" ROMSOUNDS_RSM=build/gb.rsm sh tests/run_host.sh tests/scripts/fx_map.txt > build/map.log
-          grep -q "BF 117 10" build/map.log && grep -q "SYSEX out F0 7D 52 53 18 $M F7" build/map.log
+          grep -q "BF 117 11" build/map.log && grep -q "SYSEX out F0 7D 52 53 18 $M F7" build/map.log
           node ../tests/wav_check.js build/host/romsounds.wav 0.4-0.9:1/2000
 
       - name: Chaîne JieLi (pkgman.jieliapp.com)

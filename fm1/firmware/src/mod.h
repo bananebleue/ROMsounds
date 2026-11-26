@@ -15,7 +15,7 @@
 #define MOD_MAXCH 8u
 #define MOD_PAULA_Q16 5270959u                  /* 3 546 895 / 44 100, Q16 */
 
-typedef struct { const int8_t *d; uint32_t len, ls, ll; uint8_t ft, vol; } mod_smp_t;
+typedef struct { const int8_t *d; uint32_t len, ls, ll; uint8_t ft, vol, sh; } mod_smp_t;   /* sh : données gardées 1 octet sur 2^sh (module réduit par la page) */
 typedef struct {
     const mod_smp_t *s;
     uint32_t pos, frac, step;
@@ -72,7 +72,8 @@ static uint32_t mod_tag_ch(const uint8_t *t)    /* nombre de voies d'après la s
     return 0;
 }
 
-static int mod_load(mod_t *m, const uint8_t *d, uint32_t size)
+/* sh_lo, sh_hi : pour l'échantillon i, sh = bit i de sh_lo + 2 x bit i de sh_hi (0 : module tel quel) */
+static int mod_load(mod_t *m, const uint8_t *d, uint32_t size, uint32_t sh_lo, uint32_t sh_hi)
 {
     uint32_t i, ns, hdr, nch, at, p;
     for (i = 0; i < sizeof *m; i++) ((uint8_t *)m)[i] = 0;
@@ -92,10 +93,14 @@ static int mod_load(mod_t *m, const uint8_t *d, uint32_t size)
         mod_smp_t *s = &m->smp[i];
         s->len = mod_be16(d + p + 22u) * 2u; s->ft = d[p + 24u] & 15u; s->vol = d[p + 25u] > 64u ? 64u : d[p + 25u];
         s->ls = mod_be16(d + p + 26u) * 2u; s->ll = mod_be16(d + p + 28u) * 2u;
+        s->sh = (uint8_t)((sh_lo >> i & 1u) | (sh_hi >> i & 1u) << 1);
         s->d = (const int8_t *)(d + at);
-        if (at + s->len > size) s->len = at < size ? size - at : 0u;   /* (fichier coupé : ce qui reste) */
+        {
+            uint32_t st = (s->len + (1u << s->sh) - 1u) >> s->sh;   /* octets rangés */
+            if (at + st > size) s->len = at < size ? (size - at) << s->sh : 0u;   /* (fichier coupé : ce qui reste) */
+            at += st;
+        }
         if (s->ls + s->ll > s->len) { if (s->ls >= s->len) s->ll = 0; else s->ll = s->len - s->ls; }
-        at += mod_be16(d + p + 22u) * 2u;
     }
     m->speed = 6; m->tempo = 125; m->brk = -1; m->jump = -1; m->loopj = -1;
     m->tempo_q8 = 256; m->rate_q16 = 65536;
@@ -240,7 +245,13 @@ static void mod_render(mod_t *m, int32_t *out, uint32_t n)
                 if (s->ll > 2u) c->pos = s->ls + (c->pos - s->ls) % s->ll;
                 else { c->on = 0; continue; }
             }
-            v = s->d[c->pos] * c->out_vol;
+            if (!s->sh) v = s->d[c->pos];
+            else {                              /* échantillon réduit : entre deux points gardés, en ligne droite */
+                uint32_t j = c->pos >> s->sh, f = c->pos & ((1u << s->sh) - 1u), st = (s->len + (1u << s->sh) - 1u) >> s->sh;
+                int32_t a = s->d[j], b = j + 1u < st ? s->d[j + 1u] : a;
+                v = a + (((b - a) * (int32_t)f) >> s->sh);
+            }
+            v *= c->out_vol;
             c->frac += c->step; c->pos += c->frac >> 16; c->frac &= 0xFFFFu;
             if (m->mute >> k & 1u) continue;
             if ((k & 3u) == 0u || (k & 3u) == 3u) l += v; else r += v;

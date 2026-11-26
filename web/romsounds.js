@@ -670,7 +670,7 @@ function isMod(u, name) {
 }
 /** Un module -> ce que reçoit le FM-1 (« RSMD » : en-tête de 64 octets puis le module tel quel) ; la durée jusqu'à ce
  * que le morceau reboucle et son tempo sont calculés ici en lisant les motifs (vitesse, tempo, sauts, boucles). */
-function packMod(u, name) {
+function packMod(u, name, sh) {
   const t = u.length >= 1084 ? String.fromCharCode(...u.subarray(1080, 1084)) : '';
   let nch = MOD_TAGS[t] || (/^[1-8]CHN$/.test(t) ? +t[0] : /^0[1-8]CH$/.test(t) ? +t[1] : 0), ns = 31, hdr = 1084;
   if (!nch) { nch = 4; ns = 15; hdr = 600; }
@@ -708,12 +708,91 @@ function packMod(u, name) {
   const title = ascii(String.fromCharCode(...u.subarray(0, 20)).replace(/\0.*$/s, '')) || ascii((name || '').replace(/\.mod$|^mod\./i, ''));
   const head = new Uint8Array(64), dv = new DataView(head.buffer);
   head.set([0x52, 0x53, 0x4D, 0x44]);                 // "RSMD"
-  dv.setUint32(4, 1, true); dv.setUint32(8, u.length, true); dv.setUint32(12, total, true); dv.setUint32(16, loop, true);
+  let lo = 0, hi = 0;
+  if (sh) for (let i = 1; i < 32; i++) { lo |= (sh[i] & 1) << i; hi |= (sh[i] >> 1 & 1) << i; }
+  dv.setUint32(4, lo || hi ? 2 : 1, true); dv.setUint32(56, lo >>> 0, true); dv.setUint32(60, hi >>> 0, true);   // RSMD 2 : échantillons réduits
+  dv.setUint32(8, u.length, true); dv.setUint32(12, total, true); dv.setUint32(16, loop, true);
   dv.setUint32(48, Math.round(bpm * 100), true); dv.setUint32(52, 0, true);
   const blob = new Uint8Array(64 + u.length);
   blob.set(head); blob.set(u, 64);
   return { blob, isMod: true, nch, title, game: '', system: 'Amiga', author: '', sys: 'Amiga', total, loop,
            bpm, phase: 0, raw: u.length, pcmLen: u.length - hdr - npat * 256 * nch, aLen: 0, bLen: 0 };
+}
+
+/** Un module trop gros pour le FM-1 -> un module plus petit qui joue la même musique :
+ *  1. retire les motifs absents de l'ordre de lecture et les échantillons jamais joués ;
+ *  2. coupe ce qui suit la fin de boucle des échantillons qui bouclent (jamais entendu) ;
+ *  3. s'il le faut encore, garde 1 point sur 2 (puis sur 4, sur 8) des plus gros échantillons, en commençant par
+ *     le plus gros (le FM-1 les rejoue à la bonne hauteur, en ligne droite entre deux points : RSMD 2, firmware 11).
+ *  -> { u, sh: [0..31] (2^sh : réduction de chaque échantillon), notes: [...], fits } */
+function shrinkMod(u, max) {
+  const t = u.length >= 1084 ? String.fromCharCode(...u.subarray(1080, 1084)) : '';
+  let nch = MOD_TAGS[t] || (/^[1-8]CHN$/.test(t) ? +t[0] : /^0[1-8]CH$/.test(t) ? +t[1] : 0), ns = 31, hdr = 1084;
+  if (!nch) { nch = 4; ns = 15; hdr = 600; }
+  const nord = u[20 + ns * 30], ord = u.subarray(22 + ns * 30, 22 + ns * 30 + 128);
+  let npat = 0;
+  for (let i = 0; i < 128; i++) if (i < nord || ord[i] < 64) npat = Math.max(npat, ord[i] + 1);
+  const pb = 256 * nch, be16 = i => u[i] << 8 | u[i + 1];
+  // les motifs joués, renumérotés dans l'ordre d'apparition
+  const map = new Map(), pats = [];
+  for (let i = 0; i < nord; i++) if (!map.has(ord[i])) { map.set(ord[i], pats.length); pats.push(ord[i]); }
+  // les échantillons joués
+  const used = new Uint8Array(32);
+  for (const p of pats) for (let k = 0; k < 64 * nch; k++) { const c = hdr + p * pb + k * 4; used[(u[c] & 0xF0) | u[c + 2] >> 4] = 1; }
+  // les échantillons : longueur utile, début et longueur de boucle (octets)
+  const smp = [], notes = [];
+  let at = hdr + npat * pb, dropped = 0, cut = 0;
+  for (let i = 1; i <= ns; i++) {
+    const p = 20 + (i - 1) * 30, len = be16(p + 22) * 2, ls = be16(p + 26) * 2, ll = be16(p + 28) * 2;
+    const data = u.subarray(at, Math.min(at + len, u.length));
+    at += len;
+    let keep = used[i] ? data.length : 0;
+    if (keep && ll > 2 && ls + ll < keep) { cut += keep - (ls + ll); keep = ls + ll; }
+    if (!used[i] && data.length) dropped++;
+    smp.push({ p, data: data.subarray(0, keep & ~1), ls: keep ? ls : 0, ll: keep ? ll : 2, sh: 0 });
+  }
+  const fixed = 64 + hdr + pats.length * pb;
+  const stored = s => (s.data.length + (1 << s.sh) - 1) >> s.sh;
+  const total = () => fixed + smp.reduce((a, s) => a + stored(s), 0);
+  if (npat > pats.length) notes.push((npat - pats.length) + ' motif(s) jamais joué(s) retiré(s)');
+  if (dropped) notes.push(dropped + ' échantillon(s) jamais joué(s) retiré(s)');
+  if (cut) notes.push(Math.round(cut / 1024) + ' Ko coupés après la fin des boucles');
+  let halved = 0;
+  while (total() > max) {
+    let best = null;
+    for (const s of smp) if (s.sh < 3 && s.data.length >= 64 && (!best || stored(s) > stored(best))) best = s;
+    if (!best) break;
+    if (!best.sh) halved++;
+    best.sh++;
+  }
+  if (halved) {
+    const by = [1, 2, 3].map(k => smp.filter(s => s.sh === k).length);
+    notes.push(halved + ' échantillon(s) en qualité réduite (' + ['½', '¼', '⅛'].map((f, k) => by[k] ? by[k] + ' à ' + f : '').filter(Boolean).join(', ') + ' des points)');
+  }
+  // le nouveau module
+  const out = new Uint8Array(total() - 64);
+  out.set(u.subarray(0, hdr));
+  for (const s of smp) {
+    const w = s.data.length >> 1;
+    out[s.p + 22] = w >> 8; out[s.p + 23] = w & 255;
+    out[s.p + 26] = s.ls >> 9; out[s.p + 27] = s.ls >> 1 & 255;
+    out[s.p + 28] = s.ll >> 9; out[s.p + 29] = s.ll >> 1 & 255;
+    if (!s.data.length) { out[s.p + 26] = out[s.p + 27] = out[s.p + 28] = 0; out[s.p + 29] = 1; }
+  }
+  for (let i = 0; i < 128; i++) out[22 + ns * 30 + i] = i < nord ? map.get(ord[i]) : 0;
+  pats.forEach((p, k) => out.set(u.subarray(hdr + p * pb, hdr + p * pb + pb), hdr + k * pb));
+  let o = hdr + pats.length * pb;
+  const sh = [];
+  smp.forEach((s, k) => {
+    sh[k + 1] = s.sh;
+    const n = 1 << s.sh, d = new Int8Array(s.data.buffer, s.data.byteOffset, s.data.length);
+    for (let j = 0; j < d.length; j += n) {      // la moyenne de chaque groupe de 2^sh points (moins de sifflements)
+      let a = 0, c = 0;
+      for (let q = j; q < j + n && q < d.length; q++, c++) a += d[q];
+      out[o++] = Math.round(a / c) & 255;
+    }
+  });
+  return { u: out, sh, notes, fits: out.length + 64 <= max };
 }
 
 /** Un .zip (les packs de VGMRips) : [{ name, open() -> Promise<Uint8Array> }] pour ses .vgm / .vgz, dans l'ordre du pack.
@@ -762,6 +841,6 @@ function vgmFrames(body, title, game, pack7, sys) {
            end: [0xF0, 0x7D, 0x52, 0x53, 0x03, ...b35(crc32(body)), 0xF7] };
 }
 
-const API = { beatsOf, setBpm, ymToVgm, isYm, unlha, isMod, packMod, VGM_MAX, VGM_ERR, LIB_MAX, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf, libFromFrames, libPlan, b35 };
+const API = { beatsOf, setBpm, ymToVgm, isYm, unlha, isMod, packMod, shrinkMod, VGM_MAX, VGM_ERR, LIB_MAX, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf, libFromFrames, libPlan, b35 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API; else root.RSVGM = API;
 })(typeof self !== 'undefined' ? self : this);

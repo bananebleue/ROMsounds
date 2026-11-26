@@ -169,7 +169,8 @@ EXPORT("pv_load") int pv_load(uint32_t size)
     loaded = 0;
     song.is_mod = 0;
     if (size >= 64u && size <= VGM_MAX && m[0] == 'R' && m[1] == 'S' && m[2] == 'M' && m[3] == 'D') {   /* module Amiga */
-        if (rd32(m + 4) != 1u || rd32(m + 8) + 64u != size || mod_load(&mod, m + 64, size - 64u)) return 4;
+        if ((rd32(m + 4) != 1u && rd32(m + 4) != 2u) || rd32(m + 8) + 64u != size
+            || mod_load(&mod, m + 64, size - 64u, rd32(m + 4) == 2u ? rd32(m + 56) : 0u, rd32(m + 4) == 2u ? rd32(m + 60) : 0u)) return 4;
         song.is_mod = 1; song.total = rd32(m + 12); song.loop_samples = rd32(m + 16);
         played = 0; ended = 0; loaded = 1;
         apply_mute();

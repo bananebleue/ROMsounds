@@ -201,7 +201,8 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
     if (size >= 64u && m[0] == 'R' && m[1] == 'S' && m[2] == 'M' && m[3] == 'D') {   /* RSMD : un module Amiga */
         uint32_t i;
         for (i = 0; i < sizeof song; i++) ((uint8_t *)&song)[i] = 0;
-        if (rd32(m + 4) != 1u || rd32(m + 8) + 64u != size || mod_load(&mod, m + 64, size - 64u)) return 4;
+        if ((rd32(m + 4) != 1u && rd32(m + 4) != 2u) || rd32(m + 8) + 64u != size
+            || mod_load(&mod, m + 64, size - 64u, rd32(m + 4) == 2u ? rd32(m + 56) : 0u, rd32(m + 4) == 2u ? rd32(m + 60) : 0u)) return 4;
         song.is_mod = 1; song.total = rd32(m + 12); song.loop_samples = rd32(m + 16);
         song.bpm100 = rd32(m + 48); song.beat0 = rd32(m + 52);
         song_size = size;
@@ -343,7 +344,7 @@ static void song_start(void)
     gb_init(&gb, song.gb_clock);
     nes_init(&nes, song.nes_clock, !song.ym_clock && song.pcm_len >= 0x8000u ? song.pcm : 0);   /* (NES : sa mémoire) */
     ay_init(&ay, song.ay_clock, (song.ay_type & 0xF0u) != 0u);
-    if (song.is_mod) mod_load(&mod, vgm_buf + 64, song_size - 64u);   /* (depuis le début) */
+    if (song.is_mod) mod_load(&mod, vgm_buf + 64, song_size - 64u, rd32(vgm_buf + 4) == 2u ? rd32(vgm_buf + 56) : 0u, rd32(vgm_buf + 4) == 2u ? rd32(vgm_buf + 60) : 0u);   /* (depuis le début) */
     ym_step0 = (rate << 16) / 44100u;           /* (rate < 65536 : pas de débordement) */
     psg_step0 = psg.step_q16; gb_step0 = gb.step_q16; nes_step0 = nes.step_q16; ay_step0 = ay.step_q16; oki_step0 = oki.step_q16;
     if (pitch > PITCH_MAX) pitch = PITCH_MAX;
@@ -497,7 +498,7 @@ static void app_sysex(const uint8_t *p, uint32_t n)
         i++; t = 0;
         while (i < n && p[i] && t < sizeof sys - 1u) sys[t++] = (char)p[i++];
         sys[t] = 0;
-        ack_cmd = 10;                           /* 10 : RSM7 (+ arcade) ; 9 : RSM6 (+ YM2610) ; 8 : RSM5 (+ OPL) ; 7 : RSM4 et modules (RSMD) ; 6 : RSM4 ; 5 : RSM3 ; 4 : RSM2 ; 2 : RSM1 ; 1 : VGM brut */
+        ack_cmd = 11;                           /* 11 : modules réduits (RSMD 2) ; 10 : RSM7 (+ arcade) ; 9 : RSM6 (+ YM2610) ; 8 : RSM5 (+ OPL) ; 7 : RSM4 et modules (RSMD) ; 6 : RSM4 ; 5 : RSM3 ; 4 : RSM2 ; 2 : RSM1 ; 1 : VGM brut */
     } else if (p[3] == 2u && n >= 6u) {         /* données */
         uint32_t seq = (uint32_t)p[4] | (uint32_t)p[5] << 7, off = seq * 512u, want, got;
         if (!rx_active || off >= rx_size) { ack_cmd = 0x42; return; }
