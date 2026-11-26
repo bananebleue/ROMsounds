@@ -15,8 +15,9 @@ Le FM-1 le **garde en mémoire flash**, prêt à jouer (PLAY le lance) (biblioth
 - Amiga (`mod.h`) : modules ProTracker (M.K., 4 à 8 voies, Soundtracker 15 échantillons), envoyés tels quels
   (« RSMD ») ; la page calcule la durée et le tempo en lisant les motifs. Pas encore : .xm, .s3m, .it.
 - AY-3-8910 / YM2149 (`ay_apu.h`, d'après emu2149) : Atari ST, Amstrad CPC, ZX Spectrum ; VGM (0xA0) ou fichiers .ym
-  (YM2!, YM3!, YM3b, YM5!, YM6!, compressés LHA), convertis par la page ; à 2 % de libvgm. Pas encore : SNDH, effets
-  spéciaux des YM5/6 (digidrums, voix SID).
+  (YM2!, YM3!, YM3b, YM5!, YM6!, compressés LHA), convertis par la page ; à 2 % de libvgm ; et SNDH : la page fait tourner le programme de l'Atari
+  (`fm1/sndh/sndh.c`, le 68000 de Musashi en WebAssembly) et garde ses écritures dans le YM. Pas encore : SNDH compressés
+  ICE, son DMA du STE, effets spéciaux des YM5/6 (digidrums, voix SID).
 - Neo-Geo : YM2610 / YM2610B (FM 4 ou 6 voies, ADPCM-A 6 voies, ADPCM-B) avec `fmopn.c` et `ymdeltat.c` de MAME
   (via libvgm, GPL-2.0+), sans allocation ni virgule flottante ; la puce occupe la même place en RAM que le YM2612 ; le
   SSG passe par `ay_apu.h` (YM2149 à horloge / 4). Les ROM ADPCM (souvent des Mo) sont ramenées par la page aux

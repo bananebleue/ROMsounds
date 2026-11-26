@@ -48,6 +48,12 @@ jobs:
           # le lecteur de prévisualisation de la page (WebAssembly) : clang + wasm-ld
           command -v wasm-ld > /dev/null || sudo apt-get install -y -q lld
           sh tools/build_preview.sh
+          # le lecteur SNDH (Atari ST) de la page : le 68000 de Musashi en WebAssembly, et le même sur PC
+          sh tools/build_sndh.sh && SNDH_MAIN=1 sh tools/build_sndh.sh
+          node ../tests/make_test_sndh.js build/test.sndh && build/sndh/sndh_test build/test.sndh 50 100 > build/sndh_ev.txt
+          node ../tests/sndh_test.js build/test.sndh build/sndh_ev.txt build/sndh.rsm
+          printf '2500 end\n' > build/f25.txt && ROMSOUNDS_RSM=build/sndh.rsm sh tests/run_host.sh build/f25.txt > /dev/null
+          node ../tests/wav_check.js build/host/romsounds.wav 0.2-1.8:1000
           cc -O2 -Wall -o build/make_test_vgm tests/make_test_vgm.c -lm
           build/make_test_vgm build/test.vgm
           node ../tests/rx_test.js build/test.vgm build/test.syx build/test.rsm

@@ -176,9 +176,9 @@
 
   <section class="win player" aria-labelledby="playerTitle">
     <h2 id="playerTitle">Lecteur</h2>
-    <p class="sub">Choisis un fichier VGM, VGZ, YM (Atari ST) ou MOD (Amiga), ou un pack .zip, puis envoie-le : le FM-1 le garde en mémoire, même éteint, et l’affiche prêt à jouer (PLAY le lance). La molette SELECT change de morceau, REC maintenu 2 s en retire un.</p>
+    <p class="sub">Choisis un fichier VGM, VGZ, YM ou SNDH (Atari ST) ou MOD (Amiga), ou un pack .zip, puis envoie-le : le FM-1 le garde en mémoire, même éteint, et l’affiche prêt à jouer (PLAY le lance). La molette SELECT change de morceau, REC maintenu 2 s en retire un.</p>
     <div class="row">
-      <input type="file" id="vgmFile" accept=".vgm,.vgz,.zip,.ym,.mod,.lha,.lzh" class="grow">
+      <input type="file" id="vgmFile" accept=".vgm,.vgz,.zip,.ym,.mod,.lha,.lzh,.sndh,.snd" class="grow">
     </div>
     <div class="row" id="vgmPickRow" hidden style="margin-top:10px">
       <select id="vgmPick" class="grow" aria-label="Morceau du pack"></select>
@@ -223,7 +223,7 @@
         <li>Arcade : les packs <a href="https://vgmrips.net/packs/chip/ym2151" rel="noopener" target="_blank">YM2151</a> (Capcom CPS1 comme Street Fighter II ou Final Fight, Sega, Konami, Namco…), <a href="https://vgmrips.net/packs/chip/ym2203" rel="noopener" target="_blank">YM2203</a> et OKI MSM6295 (<a href="https://vgmrips.net/wiki/OKI6295" rel="noopener" target="_blank">sa page</a>) de VGMRips. Avec deux OKI, la page garde celui qui joue le plus (en général la musique). Les bornes Konami à <a href="https://vgmrips.net/packs/chip/k053260" rel="noopener" target="_blank">K053260</a> (Turtles in Time, Sunset Riders, The Simpsons, Vendetta…) jouent aussi leurs échantillons. Une seule puce FM par morceau ; les autres puces d’une borne (Sega PCM, QSound, autres puces Konami ou Namco…) ne sont pas jouées.</li>
         <li>PC (AdLib, Sound Blaster) : les packs <a href="https://vgmrips.net/packs/chip/ym3812" rel="noopener" target="_blank">YM3812 de VGMRips</a> (PC/AT, et des bornes d’arcade comme Truxton ou Snow Bros). Les packs « Sound Blaster 16 » (YMF262, OPL3) sont joués en OPL2 : les 9 premières voies, sans la stéréo (la plupart des jeux DOS n’utilisent rien de plus).</li>
         <li>Amiga : les modules .mod, par exemple sur <a href="https://modarchive.org/" rel="noopener" target="_blank">The Mod Archive</a> (ProTracker « M.K. », 4 à 8 voies ; pas encore les formats .xm, .s3m, .it).</li>
-        <li>Atari ST : les fichiers .ym, par exemple ceux du <a href="https://github.com/nguillaumin/ym-jukebox" rel="noopener" target="_blank">YM Jukebox</a> (archives BrainBug et Modland). Les fichiers SNDH de l’<a href="https://sndh.atari.org/" rel="noopener" target="_blank">archive SNDH</a> ne sont pas encore lus.</li>
+        <li>Atari ST : les fichiers .ym, par exemple ceux du <a href="https://github.com/nguillaumin/ym-jukebox" rel="noopener" target="_blank">YM Jukebox</a> (archives BrainBug et Modland). Et les fichiers SNDH de l’<a href="https://sndh.atari.org/" rel="noopener" target="_blank">archive SNDH</a> : la page fait tourner le programme de l’Atari (un 68000 émulé) et garde ce qu’il envoie au YM2149. Pas encore : les fichiers compressés ICE, les morceaux autres que le premier, le son DMA de l’Atari STE. Les morceaux « digi » sont souvent trop gros : « Réduire pour le FM-1 ».</li>
       </ul>
       <p class="sub" style="margin:0">ROMsounds joue les puces YM2612, SN76489 (PSG Sega), Game Boy DMG, NES APU, AY-3-8910 / YM2149 (Atari ST, Amstrad CPC, ZX Spectrum), YM2610 (Neo-Geo), YM2151, YM2203, OKI MSM6295 et Konami 053260 (arcade), YM3812 / YM3526 (AdLib ; l’OPL3 joué en OPL2). Les packs « FDS » ou avec des puces de cartouche en plus (VRC6, N163…) jouent sans ces voies-là.</p>
     </details>
@@ -565,6 +565,20 @@ const { VGM_MAX, VGM_ERR, packVgm, vgmFrames } = RSVGM;
 const mmss = n => Math.floor(n / 60) + ':' + String(Math.floor(n % 60)).padStart(2, '0');
 let vgm = null;
 let pack = [];                                   // les morceaux d'un .zip (pack VGMRips)
+/* Atari ST : un SNDH est un programme 68000 ; sndh.wasm (fm1/sndh/sndh.c, le 68000 de Musashi) le fait tourner et note
+ * ce qu'il écrit dans le YM2149 ; la page en fait un VGM. grid : « Réduire » (morceaux « digi ») */
+let sndhWasm = null;
+async function sndhToVgm(u, grid) {
+  if (!sndhWasm) sndhWasm = (await WebAssembly.instantiate(await (await fetch('sndh.wasm')).arrayBuffer(), {})).instance.exports;
+  const e = sndhWasm, m = RSVGM.parseSndh(u, 1);
+  const frames = m.frames || (m.seconds || 180) * m.hz;
+  if (u.length > 900 * 1024) throw new Error('fichier SNDH trop gros');
+  new Uint8Array(e.memory.buffer, e.sndh_buf(), u.length).set(u);
+  const n = e.sndh_run(u.length, 1, m.hz, frames);
+  if (n < 0) throw new Error(n === -2 ? 'le programme du SNDH ne rend pas la main (pas encore lu)' : 'fichier SNDH illisible');
+  const T = new Uint32Array(e.memory.buffer, e.sndh_ev_t(), n).slice(), V = new Uint16Array(e.memory.buffer, e.sndh_ev_rv(), n).slice();
+  return { vgm: RSVGM.sndhVgm(m, T, V, Math.round(frames * 44100 / m.hz), grid), meta: m, guessed: !m.frames };
+}
 let modSrc = null;                               // module trop gros, en attente de « Réduire » : { u, name }
 async function showVgm(u, name, shrunk) {
   vgm = null; $('vgmBar').hidden = true; $('vgmShrink').hidden = true; if (!shrunk) modSrc = null;
@@ -574,7 +588,9 @@ async function showVgm(u, name, shrunk) {
       const inner = RSVGM.unlha(raw);
       if (/^YM[2-6]/.test(String.fromCharCode(...inner.subarray(0, 3)))) raw = RSVGM.ymToVgm(inner); else raw = inner;
     } else if (RSVGM.isYm(raw)) raw = RSVGM.ymToVgm(raw);   // Atari ST (.ym) : rejoué en commandes AY / YM2149
-    const v = shrunk && shrunk.u ? RSVGM.packMod(shrunk.u, name, shrunk.sh) : RSVGM.isMod(raw, name) ? RSVGM.packMod(raw, name) : await packVgm(raw, shrunk && { kdscSh: shrunk.kdscSh });   // Amiga (.mod) : le module tel quel (ou réduit)
+    let sndh = null;
+    if (RSVGM.isSndh(raw)) { sndh = { u: raw }; const r = await sndhToVgm(raw, shrunk && shrunk.sndhGrid); sndh.guessed = r.guessed; sndh.meta = r.meta; raw = r.vgm; }
+    const v = shrunk && shrunk.u ? RSVGM.packMod(shrunk.u, name, shrunk.sh) : RSVGM.isMod(raw, name) ? RSVGM.packMod(raw, name) : await packVgm(raw, shrunk && shrunk.kdscSh ? { kdscSh: shrunk.kdscSh } : undefined);   // Amiga (.mod) : le module tel quel (ou réduit)
     const f = { name };
     const lines = [(v.title || f.name) + (v.game ? ' — ' + v.game : ''), (v.system ? v.system + ' · ' : '') + (v.author || '')];
     lines.push(v.isMod ? 'Paula (Amiga) : module ' + v.nch + ' voies' : 'Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489', v.gb && 'Game Boy', v.nes && 'NES 2A03', v.ay && (v.ayType & 0xF0 ? 'YM2149' : 'AY-3-8910'), v.opnb && (v.opnbType ? 'YM2610B' : 'YM2610') + ' (FM, SSG, ADPCM)', v.opm && 'YM2151', v.opn && 'YM2203', v.oki && 'OKI MSM6295', v.kdsc && 'Konami 053260', v.opl && !v.opnb && (v.opl3 ? 'YMF262 (OPL3, joué en OPL2)' : v.oplType === 2 ? 'YM3526' : 'YM3812 (AdLib)')].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
@@ -585,9 +601,10 @@ async function showVgm(u, name, shrunk) {
     if (v.okiRom !== undefined) lines.push('OKI MSM6295 : ' + v.okiPhrases + ' phrases jouées, ' + kb(v.okiRom) + ' d’échantillons gardés.');
     if (v.dacStream) lines.push('Flux DAC (VGM 1.60) : convertis par la page pour le FM-1.');
     if (shrunk) lines.push('Réduit pour le FM-1 : ' + shrunk.notes.join(' ; ') + '. Écoute l’aperçu avant d’envoyer.');
-    if (v.blob.length > VGM_MAX && (v.isMod || v.kdsc) && !shrunk) {
-      modSrc = { u: raw, name };
-      $('vgmLog').textContent = lines.filter(Boolean).join('\n') + '\n\nTrop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus). ' + (v.isMod ? '« Réduire pour le FM-1 » retire ce que le morceau ne joue jamais, puis baisse la qualité des plus gros échantillons, juste ce qu’il faut.' : '« Réduire pour le FM-1 » baisse la qualité des échantillons (1 point sur 2, sur 4 ou sur 8), juste ce qu’il faut.');
+    if (sndh) lines.push('Atari ST (SNDH) : le programme de l’Atari joué ici, ' + sndh.meta.hz + ' appels par seconde' + (sndh.meta.tunes > 1 ? ' ; morceau 1 sur ' + sndh.meta.tunes : '') + (sndh.guessed ? ' ; durée inconnue : 3 min' : '') + '.');
+    if (v.blob.length > VGM_MAX && (v.isMod || v.kdsc || sndh) && !shrunk) {
+      modSrc = { u: sndh ? sndh.u : raw, name, sndh: !!sndh };
+      $('vgmLog').textContent = lines.filter(Boolean).join('\n') + '\n\nTrop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus). ' + (v.isMod ? '« Réduire pour le FM-1 » retire ce que le morceau ne joue jamais, puis baisse la qualité des plus gros échantillons, juste ce qu’il faut.' : sndh ? '« Réduire pour le FM-1 » baisse la qualité des échantillons joués par les volumes du YM, juste ce qu’il faut.' : '« Réduire pour le FM-1 » baisse la qualité des échantillons (1 point sur 2, sur 4 ou sur 8), juste ce qu’il faut.');
       $('vgmShrink').hidden = false;
       ready(); return;
     }
@@ -607,7 +624,15 @@ async function showVgm(u, name, shrunk) {
 $('vgmShrink').addEventListener('click', async () => {
   if (!modSrc) return;
   if (RSVGM.isMod(modSrc.u, modSrc.name)) { showVgm(modSrc.u, modSrc.name, RSVGM.shrinkMod(modSrc.u, VGM_MAX)); return; }
-  $('vgmShrink').disabled = true;                 // Konami 053260 : la plus petite réduction qui tient
+  $('vgmShrink').disabled = true;
+  if (modSrc.sndh) {                              // SNDH « digi » : les volumes changés moins souvent, juste ce qu'il faut
+    let g = 0;
+    for (const k of [7, 8, 9, 10, 12, 14, 16, 20, 24, 32]) { g = k; if ((await packVgm((await sndhToVgm(modSrc.u, k)).vgm)).blob.length <= VGM_MAX) break; }
+    $('vgmShrink').disabled = false;
+    showVgm(modSrc.u, modSrc.name, { sndhGrid: g, notes: ['échantillons des volumes du YM à ' + (44100 / g / 1000).toFixed(1) + ' kHz'] });
+    return;
+  }
+  // Konami 053260 : la plus petite réduction qui tient
   let sh = 1;
   for (; sh < 3; sh++) if ((await packVgm(modSrc.u, { kdscSh: sh })).blob.length <= VGM_MAX) break;
   $('vgmShrink').disabled = false;

@@ -761,6 +761,84 @@ function ymToVgm(u) {
 /** Un fichier .ym ? (compressé LHA ou non) */
 const isYm = u => u.length > 8 && (String.fromCharCode(...u.subarray(2, 7)) === '-lh5-' || /^YM[2-6]/.test(String.fromCharCode(...u.subarray(0, 3))));
 
+/* ---------- Atari ST : fichiers SNDH (un programme 68000 qui pilote le YM2149) ---------- */
+/** L'en-tête SNDH : { title, author, year, hz, tunes, frames (du morceau choisi, 0 : inconnu), seconds } ; erreur si ce
+ * n'en est pas un. Les fichiers compressés ICE (« ICE! ») ne sont pas encore lus. */
+function parseSndh(u, tune) {
+  const s = (a, b) => String.fromCharCode(...u.subarray(a, b));
+  if (u.length > 4 && s(0, 4) === 'ICE!') throw new Error('SNDH compressé (ICE) : pas encore lu ; décompresse-le d’abord');
+  if (u.length < 20 || s(12, 16) !== 'SNDH') throw new Error('ce n’est pas un fichier SNDH');
+  const out = { title: '', author: '', year: '', hz: 50, tunes: 1, frames: 0, seconds: 0, timer: 'C' };
+  const end = Math.min(u.length, 2048), str = p => { let t = ''; while (p < end && u[p]) t += String.fromCharCode(u[p++]); return t; };
+  let fr = -1, tm = -1;
+  for (let p = 16; p < end - 4;) {
+    const id = s(p, p + 4);
+    if (id === 'HDNS') break;
+    if (id === 'TITL') out.title = str(p + 4);
+    else if (id === 'COMM') out.author = str(p + 4);
+    else if (id === 'YEAR') out.year = str(p + 4);
+    else if (/^T[ABCDV]\d/.test(id)) { out.timer = id[1]; out.hz = parseInt(str(p + 2), 10) || 50; }
+    else if (id.startsWith('##')) out.tunes = parseInt(str(p + 2), 10) || 1;
+    else if (id === 'FRMS') fr = p + 4;
+    else if (id === 'TIME') tm = p + 4;
+    if (id === 'FRMS' || id === 'TIME') { p += 4 + (id === 'FRMS' ? 4 : 2) * out.tunes; continue; }   // (valeurs binaires)
+    // la balise suivante : après le texte et ses zéros
+    let q = p + 4; while (q < end && u[q]) q++; while (q < end && !u[q]) q++;
+    if (q <= p) break;
+    p = q;
+  }
+  const k = Math.max(0, Math.min(out.tunes, tune || 1) - 1);
+  if (fr >= 0) out.frames = rd32be(u, fr + 4 * k);
+  if (tm >= 0) out.seconds = u[tm + 2 * k] << 8 | u[tm + 2 * k + 1];
+  return out;
+}
+function rd32be(u, i) { return (u[i] << 24 | u[i + 1] << 16 | u[i + 2] << 8 | u[i + 3]) >>> 0; }
+/** Les écritures du YM notées par web/sndh.wasm (instants à 44,1 kHz, registre << 8 | valeur) -> un VGM (AY / YM2149, 2 MHz).
+ * grid > 1 (« Réduire », pour les morceaux « digi » qui jouent des échantillons en changeant les volumes des milliers de
+ * fois par seconde) : les volumes (registres 8 à 10) ne changent plus qu'une fois par tranche de grid échantillons
+ * (la dernière valeur de la tranche). */
+function sndhVgm(meta, T, V, total, grid) {
+  const cmd = [];
+  let t = 0;
+  const wait = s => { while (s > 0) { if (s <= 16) { cmd.push(0x70 + s - 1); s = 0; } else if (s === 735) { cmd.push(0x62); s = 0; } else { const k = Math.min(s, 65535); cmd.push(0x61, k & 255, k >> 8); s -= k; } } };
+  const MASK = [0xFF, 0x0F, 0xFF, 0x0F, 0xFF, 0x0F, 0x1F, 0x3F, 0x1F, 0x1F, 0x1F, 0xFF, 0xFF, 0x0F];
+  const g = grid > 1 ? grid : 1, last = [-1, -1, -1];
+  for (let i = 0; i < T.length; i++) {
+    if (T[i] >= total) break;
+    const r = V[i] >> 8;
+    let at = T[i];
+    if (g > 1 && r >= 8 && r <= 10) {
+      const slot = Math.floor(at / g);
+      let j = i + 1;                                 // (une écriture plus loin dans la même tranche la remplace)
+      while (j < T.length && Math.floor(T[j] / g) === slot && (V[j] >> 8) !== r) j++;
+      if (j < T.length && Math.floor(T[j] / g) === slot) continue;
+      at = slot * g;
+      if (at < t) at = t;
+      if ((V[i] & 31) === last[r - 8]) continue;
+      last[r - 8] = V[i] & 31;
+    }
+    if (at > t) { wait(at - t); t = at; }
+    cmd.push(0xA0, r, V[i] & MASK[r]);
+  }
+  if (total > t) wait(total - t);
+  cmd.push(0xA0, 7, 0x3F, 0x66);
+  const tag = [meta.title, '', '', '', 'Atari ST', '', meta.author, '', meta.year, '', ''].map(x => [...(x || '')].map(c => [c.charCodeAt(0) & 255, 0]).flat().concat([0, 0])).flat();
+  const head = new Uint8Array(0x80), gd3 = new Uint8Array(12 + tag.length), body = Uint8Array.from(cmd);
+  const dv = new DataView(head.buffer), gv = new DataView(gd3.buffer);
+  head.set([0x56, 0x67, 0x6D, 0x20]);
+  dv.setUint32(8, 0x151, true); dv.setUint32(0x34, 0x80 - 0x34, true);
+  dv.setUint32(0x18, total, true);
+  dv.setUint32(0x74, 2000000, true); head[0x78] = 0x10;
+  dv.setUint32(0x14, 0x80 + body.length - 0x14, true);
+  gd3.set([0x47, 0x64, 0x33, 0x20]); gv.setUint32(4, 0x100, true); gv.setUint32(8, tag.length, true); gd3.set(tag, 12);
+  const all = new Uint8Array(0x80 + body.length + gd3.length);
+  all.set(head); all.set(body, 0x80); all.set(gd3, 0x80 + body.length);
+  new DataView(all.buffer).setUint32(4, all.length - 4, true);
+  return all;
+}
+/** Un SNDH ? (« SNDH » en 12, ou compressé ICE) */
+const isSndh = u => u.length > 16 && (String.fromCharCode(...u.subarray(12, 16)) === 'SNDH' || String.fromCharCode(...u.subarray(0, 4)) === 'ICE!');
+
 /* ---------- Amiga : modules (.mod, ProTracker et cousins) ---------- */
 const MOD_TAGS = { 'M.K.': 4, 'M!K!': 4, 'FLT4': 4, '4CHN': 4, '6CHN': 6, '8CHN': 8, 'FLT8': 8, 'OCTA': 8, 'CD81': 8 };
 /** Un module ? (signature à 1080, sinon le nom : .mod ou mod.xxx comme sur l'Amiga) */
@@ -909,7 +987,7 @@ function zipList(z) {
     const raw = z.subarray(p + 46, p + 46 + nl);
     const name = flags & 0x800 ? new TextDecoder().decode(raw) : String.fromCharCode(...raw);
     p += 46 + nl + xl + cl;
-    if (!/\.(vg[mz]|ym|mod)$|(^|\/)mod\.[^/]+$/i.test(name) || rd32(z, lh) !== 0x04034B50) continue;
+    if (!/\.(vg[mz]|ym|mod|sndh)$|(^|\/)mod\.[^/]+$/i.test(name) || rd32(z, lh) !== 0x04034B50) continue;
     const at = lh + 30 + (z[lh + 26] | z[lh + 27] << 8) + (z[lh + 28] | z[lh + 29] << 8), data = z.subarray(at, at + csize);
     out.push({ name: name.split('/').pop(), open: async () => {
       if (method === 0) return data;
@@ -941,6 +1019,6 @@ function vgmFrames(body, title, game, pack7, sys) {
            end: [0xF0, 0x7D, 0x52, 0x53, 0x03, ...b35(crc32(body)), 0xF7] };
 }
 
-const API = { beatsOf, setBpm, ymToVgm, isYm, unlha, isMod, packMod, shrinkMod, VGM_MAX, VGM_ERR, LIB_MAX, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf, libFromFrames, libPlan, b35 };
+const API = { beatsOf, setBpm, ymToVgm, isYm, parseSndh, sndhVgm, isSndh, unlha, isMod, packMod, shrinkMod, VGM_MAX, VGM_ERR, LIB_MAX, parseVgm, packVgm, vgmFrames, crc32, ascii, zipList, gunzipIf, libFromFrames, libPlan, b35 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API; else root.RSVGM = API;
 })(typeof self !== 'undefined' ? self : this);

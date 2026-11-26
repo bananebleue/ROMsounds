@@ -1,7 +1,7 @@
 /* Service worker : la page s'ouvre aussi sans réseau.
    Réseau d'abord (toujours la dernière version), copie gardée pour le hors-ligne. */
-const CACHE = 'romsounds-v1';
-const SHELL = ['./', 'index.html', 'romsounds.js', 'fm1ota.js', 'preview.wasm', 'manifest.webmanifest', 'icon-192.png'];
+const CACHE = 'romsounds-v2';
+const SHELL = ['./', 'index.html', 'romsounds.js', 'fm1ota.js', 'preview.wasm', 'sndh.wasm', 'manifest.webmanifest', 'icon-192.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
