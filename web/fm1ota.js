@@ -291,13 +291,15 @@ class Updater {
 
   /** le premier port qui répond à la demande d'identité (et à want(identité)) → { link, id, name } */
   async find(want) {
+    this.why = [];                                // (pourquoi rien n'a été trouvé : pour le dire à la page)
     for (const input of this.candidates()) {
       const output = this.pairOutput(input);
-      if (!output) continue;
+      if (!output) { this.why.push({ name: input.name, what: 'nosend' }); continue; }
       const link = new Link(this.access, input, output);
-      try { await link.open(); } catch (e) { link.close(); continue; }
+      try { await link.open(); } catch (e) { link.close(); this.why.push({ name: input.name, what: 'busy', msg: e.message || String(e) }); continue; }
       const id = await handshake(link, 2);
       if (id && (!want || want(id))) return { link, id, name: input.name };
+      this.why.push({ name: input.name, what: id ? 'other' : 'silent' });
       link.close();
     }
     return null;

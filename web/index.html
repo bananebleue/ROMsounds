@@ -468,7 +468,14 @@ async function detect() {
     const up = new FM1OTA.Updater(await midi());
     if (!$('dot').classList.contains('on')) setState('Recherche…', 'busy');
     const dev = await up.find();
-    if (!dev) { showLib(null); setState('Non détecté (ports vus : ' + ([...access.inputs.values()].filter(p => p.state === 'connected').map(p => p.name).join(', ') || 'aucun') + ')'); return; }
+    if (!dev) {
+      showLib(null);
+      const why = up.why || [], busyP = why.find(w => w.what === 'busy'), silent = why.filter(w => w.what === 'silent').map(w => w.name);
+      setState(busyP ? 'Non détecté : le port « ' + busyP.name + ' » est déjà ouvert ailleurs (une autre fenêtre ou un onglet de ROMsounds, l’application installée, un logiciel de musique) : ferme-les, puis « Détecter le FM-1 »'
+        : silent.length ? 'Non détecté : « ' + silent.join(' », « ') + ' » ne répond pas. Le FM-1 est peut-être bloqué : débranche-le, rebranche-le, puis « Détecter le FM-1 »'
+        : 'Non détecté (ports vus : ' + ([...access.inputs.values()].filter(p => p.state === 'connected').map(p => p.name).join(', ') || 'aucun') + ')');
+      return;
+    }
     try { showLib(isRs(dev.id) ? (await fetchLib(dev)) || await queryLib(dev) : null); } catch (e) { showLib(null); }
     try { if (isRs(dev.id) && !mapDirty) { const m = await fetchMap(dev); if (m) { setMap(m, false); mapInfo('Réglages lus dans le FM-1.'); } } } catch (e) { /* (version sans attribution) */ }
     dev.link.close();
