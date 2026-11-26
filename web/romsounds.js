@@ -351,7 +351,7 @@ function okiRebuild(u, start, blocks) {
  * le bas si la voix joue à l'envers) est notée ; les plages sont fusionnées et mises bout à bout dans une ROM neuve.
  * Les écritures du début (registres 4-6 de chaque voix) sont retirées et réécrites, avec l'adresse neuve, juste avant
  * chaque départ. Rend { rom, map(adresse) -> adresse neuve, ranges }. */
-function kdscState() { return { st: [0, 0, 0, 0], len: [0, 0, 0, 0], on: 0 }; }
+function kdscState() { return { st: [0, 0, 0, 0], len: [0, 0, 0, 0], on: 0, mode: 0 }; }
 function kdscReg(k, r, d) {                       // les registres qui comptent pour l'adresse (true : écriture retirée)
   if (r >= 0x08 && r <= 0x27) {
     const v = (r - 8) >> 3, o = r & 7;
@@ -362,7 +362,7 @@ function kdscReg(k, r, d) {                       // les registres qui comptent 
   }
   return false;
 }
-function kdscRebuild(u, start, blocks) {
+function kdscRebuild(u, start, blocks, sh) {
   const bl = blocks.filter(x => x.type === 0x8E && x.chip === 0);
   const rd = a => { for (const x of bl) if (a >= x.at && a < x.at + x.data.length) return x.data[a - x.at]; return 0; };
   const k = kdscState(), spans = [];
@@ -372,25 +372,60 @@ function kdscRebuild(u, start, blocks) {
     if (u[p] === 0xBA && !(u[p + 1] & 0x80)) {
       const r = u[p + 1] & 0x3F, d = u[p + 2];
       if (r === 0x28) {
-        for (let v = 0; v < 4; v++) if ((d & ~k.on) >> v & 1)
-          spans.push(d >> (v | 4) & 1 ? [Math.max(0, k.st[v] - k.len[v]), k.st[v]] : [k.st[v], Math.min(0x1FFFFF, k.st[v] + k.len[v])]);
+        for (let v = 0; v < 4; v++) if ((d & ~k.on) >> v & 1) {
+          const ad = k.mode >> (v | 4) & 1;
+          spans.push(d >> (v | 4) & 1 ? [Math.max(0, k.st[v] - k.len[v]), k.st[v], ad] : [k.st[v], Math.min(0x1FFFFF, k.st[v] + k.len[v]), ad]);
+        }
         k.on = d;
-      } else kdscReg(k, r, d);
+      } else { if (r === 0x2A) k.mode = d; kdscReg(k, r, d); }
     }
     p += n;
   }
   spans.sort((a, b) => a[0] - b[0]);
   const ranges = [];
-  for (const [a, b] of spans) { const l = ranges[ranges.length - 1]; if (l && a <= l[1] + 1) l[1] = Math.max(l[1], b); else ranges.push([a, b]); }
+  for (const [a, b, ad] of spans) {
+    const l = ranges[ranges.length - 1], w = (b - a + 1) * (ad ? 1 : -1);   // (KADPCM ou PCM : ce qui couvre le plus)
+    if (l && a <= l[1] + 1) { l[1] = Math.max(l[1], b); l[2] += w; } else ranges.push([a, b, w]);
+  }
   let total = 0;
-  for (const r of ranges) { r.push(total); total += r[1] - r[0] + 1; }
+  for (const r of ranges) { if (sh) total = total + 7 & ~7; r.push(total); total += r[1] - r[0] + 1; }   // [début, fin, KADPCM si > 0, place]
+  if (sh) total = total + 7 & ~7;
   const rom = new Uint8Array(total);
-  for (const [a, b, o] of ranges) for (let i = a; i <= b; i++) rom[o + i - a] = rd(i);
-  const map = a => { for (const [x, y, o] of ranges) if (a >= x && a <= y) return o + a - x; return 0; };
-  return { rom, map, ranges };
+  for (const [a, b, , o] of ranges) for (let i = a; i <= b; i++) rom[o + i - a] = rd(i);
+  const map = a => { for (const [x, y, , o] of ranges) if (a >= x && a <= y) return o + a - x; return 0; };
+  return { rom: sh ? kdscShrink(rom, ranges, sh) : rom, map, ranges, full: total };
 }
 
-async function packVgm(u) {
+/* Échantillons du Konami 053260 réduits (1 point sur 2^sh, firmware/src/k053260.h) : en PCM, la moyenne de chaque groupe
+ * d'octets ; en KADPCM, un quartet par groupe de 2^sh quartets, choisi pour que la somme des écarts (sur 8 bits, comme la
+ * puce) suive celle de l'original. */
+function kdscShrink(rom, ranges, sh) {
+  const n = 1 << sh, out = new Uint8Array(rom.length >> sh), T = [0, 1, 2, 4, 8, 16, 32, 64, -128, -64, -32, -16, -8, -4, -2, -1];
+  const nib = q => rom[q >> 1] >> (q & 1 ? 4 : 0) & 15;
+  for (const [a, b, ad, o] of ranges) {
+    const len = b - a + 1;
+    if (ad > 0) {
+      let c = 0, e = 0;                             // somme d'origine, somme réencodée
+      for (let q = 2 * o; q < 2 * (o + len); q += n) {
+        for (let j = q; j < q + n; j++) c += T[nib(j)];
+        let best = 0, bd = 1e9;
+        for (let t = 0; t < 16; t++) { const dd = ((((e + T[t] - c) % 256) + 384) % 256) - 128; if (Math.abs(dd) < bd) { bd = Math.abs(dd); best = t; } }
+        e += T[best];
+        const m = q >> sh;
+        out[m >> 1] |= best << (m & 1 ? 4 : 0);
+      }
+    } else {
+      for (let i = o; i < o + len; i += n) {
+        let t = 0, k = 0;
+        for (let j = i; j < i + n && j < o + len; j++, k++) t += rom[j] << 24 >> 24;
+        out[i >> sh] = Math.round(t / k) & 255;
+      }
+    }
+  }
+  return out;
+}
+
+async function packVgm(u, opt) {
   const v = parseVgm(u);
   const ver = rd32(u, 8), start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
   const loop = rd32(u, 0x1C) ? 0x1C + rd32(u, 0x1C) : 0;
@@ -432,7 +467,8 @@ async function packVgm(u) {
   const nb = v.opnb ? opnbTrim(u, start, romBlocks) : null;
   const shA = new Uint8Array(0x30), shB = new Uint8Array(0x16);
   const ok = v.oki ? okiRebuild(u, start, romBlocks) : null, okSt = okiState();
-  const kd = v.kdsc ? kdscRebuild(u, start, romBlocks) : null, kdSt = kdscState();
+  const kdSh = v.kdsc && opt && opt.kdscSh || 0;
+  const kd = v.kdsc ? kdscRebuild(u, start, romBlocks, kdSh) : null, kdSt = kdscState();
   while (p < u.length) {
     const n = cmdLen(u, p), c = u[p];
     if (!n) break;
@@ -524,11 +560,11 @@ async function packVgm(u) {
   dv.setUint32(72, v.opnb, true); dv.setUint32(76, v.opnbType, true); dv.setUint32(80, nb ? nb.a.length : 0, true);   // YM2610
   dv.setUint32(88, v.opm, true); dv.setUint32(92, v.opn, true);                            // arcade : YM2151, YM2203
   dv.setUint32(96, v.oki ? (v.oki | (v.okiPin7 ? 0x80000000 : 0)) >>> 0 : 0, true);         // OKI MSM6295
-  dv.setUint32(100, v.kdsc, true);                                                         // Konami 053260
+  dv.setUint32(100, v.kdsc, true); dv.setUint32(84, kdSh, true);                                                         // Konami 053260
   const blob = cat([head, P, A, B]);
   if (nb) Object.assign(v, { adpcm: nb.a.length + nb.b.length, adpcmRom: nb.romA + (nb.romB || 0) });
   if (ok) Object.assign(v, { okiRom: ok.rom.length, okiPhrases: ok.ids.size });
-  if (kd) Object.assign(v, { kdscRom: kd.rom.length, kdscRomFull: romBlocks.filter(x => x.type === 0x8E).reduce((m, x) => Math.max(m, x.romSize), 0) });
+  if (kd) Object.assign(v, { kdscSh: kdSh, kdscRom: kd.rom.length, kdscRomFull: romBlocks.filter(x => x.type === 0x8E).reduce((m, x) => Math.max(m, x.romSize), 0) });
   return Object.assign(v, { blob, bpm: beat.bpm, phase: beat.phase, pcmLen: P.length, aLen: A.length, bLen: B.length, dacStream, raw: u.length });
 }
 

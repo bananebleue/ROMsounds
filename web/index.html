@@ -574,7 +574,7 @@ async function showVgm(u, name, shrunk) {
       const inner = RSVGM.unlha(raw);
       if (/^YM[2-6]/.test(String.fromCharCode(...inner.subarray(0, 3)))) raw = RSVGM.ymToVgm(inner); else raw = inner;
     } else if (RSVGM.isYm(raw)) raw = RSVGM.ymToVgm(raw);   // Atari ST (.ym) : rejoué en commandes AY / YM2149
-    const v = shrunk ? RSVGM.packMod(shrunk.u, name, shrunk.sh) : RSVGM.isMod(raw, name) ? RSVGM.packMod(raw, name) : await packVgm(raw);   // Amiga (.mod) : le module tel quel (ou réduit)
+    const v = shrunk && shrunk.u ? RSVGM.packMod(shrunk.u, name, shrunk.sh) : RSVGM.isMod(raw, name) ? RSVGM.packMod(raw, name) : await packVgm(raw, shrunk && { kdscSh: shrunk.kdscSh });   // Amiga (.mod) : le module tel quel (ou réduit)
     const f = { name };
     const lines = [(v.title || f.name) + (v.game ? ' — ' + v.game : ''), (v.system ? v.system + ' · ' : '') + (v.author || '')];
     lines.push(v.isMod ? 'Paula (Amiga) : module ' + v.nch + ' voies' : 'Puces : ' + [v.ym && 'YM2612', v.sn && 'SN76489', v.gb && 'Game Boy', v.nes && 'NES 2A03', v.ay && (v.ayType & 0xF0 ? 'YM2149' : 'AY-3-8910'), v.opnb && (v.opnbType ? 'YM2610B' : 'YM2610') + ' (FM, SSG, ADPCM)', v.opm && 'YM2151', v.opn && 'YM2203', v.oki && 'OKI MSM6295', v.kdsc && 'Konami 053260', v.opl && !v.opnb && (v.opl3 ? 'YMF262 (OPL3, joué en OPL2)' : v.oplType === 2 ? 'YM3526' : 'YM3812 (AdLib)')].filter(Boolean).join(' + ') + (v.others ? ' (+ d’autres, ignorées)' : ''));
@@ -585,9 +585,9 @@ async function showVgm(u, name, shrunk) {
     if (v.okiRom !== undefined) lines.push('OKI MSM6295 : ' + v.okiPhrases + ' phrases jouées, ' + kb(v.okiRom) + ' d’échantillons gardés.');
     if (v.dacStream) lines.push('Flux DAC (VGM 1.60) : convertis par la page pour le FM-1.');
     if (shrunk) lines.push('Réduit pour le FM-1 : ' + shrunk.notes.join(' ; ') + '. Écoute l’aperçu avant d’envoyer.');
-    if (v.blob.length > VGM_MAX && v.isMod && !shrunk) {
+    if (v.blob.length > VGM_MAX && (v.isMod || v.kdsc) && !shrunk) {
       modSrc = { u: raw, name };
-      $('vgmLog').textContent = lines.filter(Boolean).join('\n') + '\n\nTrop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus). « Réduire pour le FM-1 » retire ce que le morceau ne joue jamais, puis baisse la qualité des plus gros échantillons, juste ce qu’il faut.';
+      $('vgmLog').textContent = lines.filter(Boolean).join('\n') + '\n\nTrop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus). ' + (v.isMod ? '« Réduire pour le FM-1 » retire ce que le morceau ne joue jamais, puis baisse la qualité des plus gros échantillons, juste ce qu’il faut.' : '« Réduire pour le FM-1 » baisse la qualité des échantillons (1 point sur 2, sur 4 ou sur 8), juste ce qu’il faut.');
       $('vgmShrink').hidden = false;
       ready(); return;
     }
@@ -604,10 +604,14 @@ async function showVgm(u, name, shrunk) {
   ready();
 }
 
-$('vgmShrink').addEventListener('click', () => {
+$('vgmShrink').addEventListener('click', async () => {
   if (!modSrc) return;
-  const r = RSVGM.shrinkMod(modSrc.u, VGM_MAX);
-  showVgm(modSrc.u, modSrc.name, r);
+  if (RSVGM.isMod(modSrc.u, modSrc.name)) { showVgm(modSrc.u, modSrc.name, RSVGM.shrinkMod(modSrc.u, VGM_MAX)); return; }
+  $('vgmShrink').disabled = true;                 // Konami 053260 : la plus petite réduction qui tient
+  let sh = 1;
+  for (; sh < 3; sh++) if ((await packVgm(modSrc.u, { kdscSh: sh })).blob.length <= VGM_MAX) break;
+  $('vgmShrink').disabled = false;
+  showVgm(modSrc.u, modSrc.name, { kdscSh: sh, notes: ['échantillons Konami 053260 gardés à 1 point sur ' + (1 << sh)] });
 });
 
 $('vgmFile').addEventListener('change', async () => {
@@ -662,9 +666,9 @@ async function sendVgm() {
     const fr = vgmFrames(vgm.blob, vgm.title, vgm.game, FM1OTA.pack7, vgm.sys);
     acks.length = 0;
     send(fr.begin);
-    const hello = await waitAck(117, v => v === 1 || v === 2 || v >= 4 && v <= 12, 2000);
+    const hello = await waitAck(117, v => v === 1 || v === 2 || v >= 4 && v <= 13, 2000);
     if (hello === null) throw new Error('le FM-1 ne répond pas au début de l’envoi');
-    if (hello !== 12) throw new Error('ROMsounds sur le FM-1 est une ancienne version, qui ne lit pas ce format : réinstalle ROMsounds (section « Installer un firmware »), puis renvoie le morceau.');
+    if (hello !== 13) throw new Error('ROMsounds sur le FM-1 est une ancienne version, qui ne lit pas ce format : réinstalle ROMsounds (section « Installer un firmware »), puis renvoie le morceau.');
     const n = fr.data.length, t0 = Date.now();
     for (let seq = 0; seq < n; seq++) {
       const frame = fr.data[seq];

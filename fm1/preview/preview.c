@@ -202,6 +202,7 @@ EXPORT("pv_load") int pv_load(uint32_t size)
     song.opn_clock = hl > 88u ? rd32(m + 92) : 0u;
     song.oki_clock = hl > 88u ? rd32(m + 96) : 0u;
     song.kdsc_clock = hl > 88u && !song.oki_clock ? rd32(m + 100) : 0u;
+    song.kdsc_sh = song.kdsc_clock ? rd32(m + 84) : 0u;   /* (échantillons réduits par la page : 1 point sur 2^sh) */
     if (song.opnb_clock && !song.ay_clock) { song.ay_clock = song.opnb_clock / 4u; song.ay_type = 0x10u; }
     if (song.opn_clock && !song.ay_clock) { song.ay_clock = song.opn_clock / 2u; song.ay_type = 0x10u; }
     song.pcm = m + hl; song.pcm_len = pcm;
@@ -234,7 +235,7 @@ EXPORT("pv_load") int pv_load(uint32_t size)
         ym2612_reset_chip(ym);
     }
     oki_init(&oki, song.oki_clock & 0x7FFFFFFFu, song.oki_clock >> 31, song.oki_clock ? song.pcm : 0, song.pcm_len);
-    kdsc_init(&kdsc, song.kdsc_clock, song.kdsc_clock ? song.pcm : 0, song.pcm_len);
+    kdsc_init(&kdsc, song.kdsc_clock, song.kdsc_clock ? song.pcm : 0, song.pcm_len, song.kdsc_sh);
     opl = 0;
     if (song.opl_clock && !song.ym_clock && !opnb && !opm && !opn) {     /* comme song_start (firmware/src/romsounds.c) */
         uint32_t oc = song.opl_clock > 4000000u ? 4000000u : song.opl_clock;

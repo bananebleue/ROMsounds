@@ -32,7 +32,7 @@ typedef struct {
     uint32_t ay_clock, ay_type;         /* AY-3-8910 / YM2149 (type VGM : 0x00 AY, 0x10 YM2149...) */
     uint32_t opl_clock, opl_type;
     uint32_t opnb_clock, opnb_type, adpcm_a_len;
-    uint32_t opm_clock, opn_clock, oki_clock, kdsc_clock;   /* (kdsc : Konami 053260, à la place de l'OKI) */   /* arcade : YM2151, YM2203, OKI MSM6295 (bit 31 : broche 7 haute) */   /* YM2610 (type bit 0 : YM2610B) ; la banque : ADPCM-A puis ADPCM-B */       /* OPL2 / OPL (type : 1 YM3812, 2 YM3526) */
+    uint32_t opm_clock, opn_clock, oki_clock, kdsc_clock, kdsc_sh;   /* (kdsc : Konami 053260, à la place de l'OKI) */   /* arcade : YM2151, YM2203, OKI MSM6295 (bit 31 : broche 7 haute) */   /* YM2610 (type bit 0 : YM2610B) ; la banque : ADPCM-A puis ADPCM-B */       /* OPL2 / OPL (type : 1 YM3812, 2 YM3526) */
     uint32_t is_mod;                    /* 1 : un module Amiga (mod.h), pas des commandes VGM */             /* tempo deviné par la page (BPM x 100, 0 : inconnu), premier temps (trames) */
 } vgm_t;
 

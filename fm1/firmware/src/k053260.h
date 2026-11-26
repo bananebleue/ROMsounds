@@ -6,7 +6,11 @@
  * dans la ROM seulement les échantillons joués et réécrit leurs adresses. Calcul à la fréquence de la puce (horloge / 64),
  * ramené à 44,1 kHz par interpolation ; entiers seulement.
  *
- *   kdsc_init(&k, horloge, rom, taille)   (horloge : 3 579 545 Hz)
+ * Échantillons réduits par la page (sh > 0 : 1 point sur 2^sh gardé, pour faire tenir un morceau) : en PCM, l'octet de
+ * l'adresse a est rangé en a >> sh ; en KADPCM, le quartet n (2 x adresse + quartet) est rangé en n >> sh, réencodé pour
+ * que la somme des écarts suive l'original : la voix ne décode un quartet que quand n >> sh change.
+ *
+ *   kdsc_init(&k, horloge, rom, taille, sh)   (horloge : 3 579 545 Hz)
  *   kdsc_write(&k, reg, val)               commande VGM 0xBA
  *   kdsc_render(&k, out, n)                ajoute n trames stéréo (int32) */
 #ifndef ROMSOUNDS_K053260_H
@@ -21,13 +25,14 @@ typedef struct {
     uint16_t length, pitch;
     int8_t output;
     uint8_t playing, volume, pan, loop, kadpcm, reverse, force;
+    uint32_t lastm;                             /* (échantillons réduits, KADPCM) le dernier quartet rangé décodé */
     int32_t pv[2];                              /* volume x panoramique (Q15, comme pan_volume de MAME) */
 } kdsc_voice_t;
 typedef struct {
     const uint8_t *rom; uint32_t rom_len;
     uint32_t step_q16, acc;                     /* échantillons de la puce par trame de sortie, Q16 */
     int32_t prev[2], cur[2];
-    uint8_t keyon, mode, mute;                  /* mute : bits 0-3 = voix 1-4 */
+    uint8_t keyon, mode, mute, sh;              /* mute : bits 0-3 = voix 1-4 ; sh : réduction des échantillons */
     kdsc_voice_t v[4];
 } kdsc_t;
 
@@ -35,7 +40,7 @@ static const uint16_t KDSC_PAN[8][2] = {{0, 0}, {65535, 0}, {59870, 26656}, {536
     {26656, 59870}, {0, 65535}};                /* (65536 dans MAME : 65535 ici, pour tenir sur 16 bits) */
 static const int8_t KDSC_ADPCM[16] = {0, 1, 2, 4, 8, 16, 32, 64, -128, -64, -32, -16, -8, -4, -2, -1};
 
-static void kdsc_init(kdsc_t *k, uint32_t clock, const uint8_t *rom, uint32_t len)
+static void kdsc_init(kdsc_t *k, uint32_t clock, const uint8_t *rom, uint32_t len, uint32_t sh)
 {
     uint32_t i, r;
     for (i = 0; i < sizeof *k; i++) ((uint8_t *)k)[i] = 0;
@@ -43,6 +48,7 @@ static void kdsc_init(kdsc_t *k, uint32_t clock, const uint8_t *rom, uint32_t le
     r = clock / 64u;
     k->step_q16 = (r / 44100u) << 16 | (((r % 44100u) << 16) / 44100u);
     k->rom = rom; k->rom_len = rom ? len : 0u;
+    k->sh = (uint8_t)(sh > 3u ? 3u : sh);
 }
 
 static void kdsc_pan(kdsc_voice_t *v)
@@ -75,7 +81,7 @@ static void kdsc_write(kdsc_t *k, uint32_t reg, uint32_t d)
             kdsc_voice_t *v = &k->v[i];
             v->reverse = (uint8_t)(d >> (i | 4u) & 1u);
             if ((d & ~(uint32_t)k->keyon) >> i & 1u) {
-                v->position = v->kadpcm ? 1u : 0u; v->force = 1; v->output = 0; v->playing = 1;
+                v->position = v->kadpcm ? 1u : 0u; v->force = 1; v->output = 0; v->playing = 1; v->lastm = 0xFFFFFFFFu;
             } else if (!(d >> i & 1u)) { v->position = 0; v->output = 0; v->playing = 0; }
         }
         k->keyon = (uint8_t)d;
@@ -104,12 +110,24 @@ static void kdsc_clock(kdsc_t *k, int32_t *o)   /* un échantillon de la puce (6
             v->counter = v->counter - 0x1000u + v->pitch;
             bp = ++v->position >> (v->kadpcm ? 1 : 0);
             if (bp > v->length) {
-                if (v->loop) { v->position = 0; v->output = 0; bp = 0; }
+                if (v->loop) { v->position = 0; v->output = 0; bp = 0; v->lastm = 0xFFFFFFFFu; }
                 else { v->playing = 0; break; }
             }
-            rd = kdsc_rd(k, (v->reverse ? v->start - bp : v->start + bp) & 0x1FFFFFu);
-            if (v->kadpcm) { if (v->position & 1u) rd >>= 4; v->output = (int8_t)(v->output + KDSC_ADPCM[rd & 15u]); }
-            else v->output = (int8_t)rd;
+            {
+                uint32_t a = (v->reverse ? v->start - bp : v->start + bp) & 0x1FFFFFu;
+                if (!k->sh) {
+                    rd = kdsc_rd(k, a);
+                    if (v->kadpcm) { if (v->position & 1u) rd >>= 4; v->output = (int8_t)(v->output + KDSC_ADPCM[rd & 15u]); }
+                    else v->output = (int8_t)rd;
+                } else if (v->kadpcm) {          /* réduit : un quartet rangé pour 2^sh quartets d'origine */
+                    uint32_t m = (2u * a + (v->position & 1u)) >> k->sh;
+                    if (m != v->lastm) {
+                        v->lastm = m;
+                        rd = kdsc_rd(k, m >> 1) >> ((m & 1u) ? 4 : 0);
+                        v->output = (int8_t)(v->output + KDSC_ADPCM[rd & 15u]);
+                    }
+                } else v->output = (int8_t)kdsc_rd(k, a >> k->sh);
+            }
         }
         if (!v->playing || (k->mute >> i & 1u)) continue;
         o[0] += v->output * v->pv[0] >> 15;

@@ -239,6 +239,7 @@ static int song_load(uint32_t size)             /* RSM1 reçu : vérifier, prép
     song.opn_clock = hl > 88u ? rd32(m + 92) : 0u;
     song.oki_clock = hl > 88u ? rd32(m + 96) : 0u;
     song.kdsc_clock = hl > 88u && !song.oki_clock ? rd32(m + 100) : 0u;
+    song.kdsc_sh = song.kdsc_clock ? rd32(m + 84) : 0u;   /* (échantillons réduits par la page : 1 point sur 2^sh) */
     if (song.opnb_clock && !song.ay_clock) { song.ay_clock = song.opnb_clock / 4u; song.ay_type = 0x10u; }   /* le SSG */
     if (song.opn_clock && !song.ay_clock) { song.ay_clock = song.opn_clock / 2u; song.ay_type = 0x10u; }     /* (YM2203) */
     if (song.bpm100 && (song.bpm100 < 3000u || song.bpm100 > 40000u)) song.bpm100 = 0;   /* (30 .. 400 BPM) */
@@ -340,7 +341,7 @@ static void song_start(void)
         ym2612_reset_chip(ym);
     }
     oki_init(&oki, song.oki_clock & 0x7FFFFFFFu, song.oki_clock >> 31, song.oki_clock ? song.pcm : 0, song.pcm_len);
-    kdsc_init(&kdsc, song.kdsc_clock, song.kdsc_clock ? song.pcm : 0, song.pcm_len);
+    kdsc_init(&kdsc, song.kdsc_clock, song.kdsc_clock ? song.pcm : 0, song.pcm_len, song.kdsc_sh);
     opl = 0;
     if (song.opl_clock && !song.ym_clock && !opnb && !opm && !opn) {   /* OPL2 / OPL : à sa fréquence native (horloge / 72), comme le YM2612 */
         uint32_t oc = song.opl_clock > 4000000u ? 4000000u : song.opl_clock;
@@ -507,7 +508,7 @@ static void app_sysex(const uint8_t *p, uint32_t n)
         i++; t = 0;
         while (i < n && p[i] && t < sizeof sys - 1u) sys[t++] = (char)p[i++];
         sys[t] = 0;
-        ack_cmd = 12;                           /* 12 : Konami 053260 ; 11 : modules réduits (RSMD 2) ; 10 : RSM7 (+ arcade) ; 9 : RSM6 (+ YM2610) ; 8 : RSM5 (+ OPL) ; 7 : RSM4 et modules (RSMD) ; 6 : RSM4 ; 5 : RSM3 ; 4 : RSM2 ; 2 : RSM1 ; 1 : VGM brut */
+        ack_cmd = 13;                           /* 13 : Konami 053260 réduit ; 12 : Konami 053260 ; 11 : modules réduits (RSMD 2) ; 10 : RSM7 (+ arcade) ; 9 : RSM6 (+ YM2610) ; 8 : RSM5 (+ OPL) ; 7 : RSM4 et modules (RSMD) ; 6 : RSM4 ; 5 : RSM3 ; 4 : RSM2 ; 2 : RSM1 ; 1 : VGM brut */
     } else if (p[3] == 2u && n >= 6u) {         /* données */
         uint32_t seq = (uint32_t)p[4] | (uint32_t)p[5] << 7, off = seq * 512u, want, got;
         if (!rx_active || off >= rx_size) { ack_cmd = 0x42; return; }
