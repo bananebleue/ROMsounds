@@ -4,7 +4,7 @@
  *   en-tête de 104 octets : "RSM7", horloges YM2612 et SN76489, durée et boucle (trames à 44,1 kHz), tailles des trois
  *   parties, avertissements, bruit du SN76489 (rebouclage | largeur << 16), horloges Game Boy et NES, tempo (BPM x 100, deviné :
  *   beatsOf) et position du premier temps (trames), horloge et type de l'AY-3-8910 / YM2149, horloge et type de l'OPL (1 : YM3812, 2 : YM3526), horloge et type du YM2610 (bit 0 : YM2610B), taille de
- *   l'ADPCM-A dans la banque, horloges du YM2151, du YM2203 et de l'OKI MSM6295 (bit 31 : broche 7) ; puis la banque
+ *   l'ADPCM-A dans la banque, horloges du YM2151, du YM2203, de l'OKI MSM6295 (bit 31 : broche 7) et du Konami 053260 ; puis la banque
  *   d'échantillons (brute : pour le YM2612, toutes les données de type 0 bout à bout ; pour la NES, l'image de sa mémoire
  *   $8000-$FFFF, que lit le DMC ; pour le YM2610, les échantillons ADPCM-A puis ADPCM-B réellement joués ; pour l'OKI MSM6295, sa ROM refaite : table des
  *   phrases jouées puis leurs échantillons), puis les commandes
@@ -21,7 +21,7 @@ const VGM_ERR = { 0x41: 'fichier trop gros pour le FM-1', 0x42: 'données hors d
   0x47: 'attribution refusée par le FM-1', 0x48: 'le FM-1 n’a pas pu l’enregistrer (mémoire flash)' };
 const LIB_MAX = 40;                      // morceaux au plus dans la bibliothèque du FM-1 (firmware : LIB_MAX)
 // horloges des autres puces dans l'en-tête (spécification VGM 1.71)
-const OTHER_CHIPS = [0x38, 0x40, 0x48, 0x58, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x88, 0x8C, 0x90, 0x9C, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
+const OTHER_CHIPS = [0x38, 0x40, 0x48, 0x58, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x88, 0x8C, 0x90, 0x9C, 0xA0, 0xA4, 0xA8, 0xB0, 0xB4, 0xB8, 0xC0, 0xC4, 0xC8, 0xCC, 0xD0, 0xD8, 0xDC, 0xE0];
 const rd32 = (u, i) => (u[i] | u[i + 1] << 8 | u[i + 2] << 16 | u[i + 3] << 24) >>> 0;
 // l'écran du FM-1 n'a que l'ASCII : accents retirés, le reste remplacé par « ? »
 const ascii = t => (t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x20-\x7E]/g, '?').trim().slice(0, 28);
@@ -45,6 +45,7 @@ function parseVgm(u) {
   const nbRaw = head >= 0x50 ? rd32(u, 0x4C) : 0, opnb = nbRaw & 0x3FFFFFFF, opnbType = nbRaw & 0x80000000 ? 1 : 0;   // YM2610 (Neo-Geo)
   const opmRaw = rd32(u, 0x30), opnRaw = head >= 0x48 ? rd32(u, 0x44) : 0, okiRaw = head >= 0x9C ? rd32(u, 0x98) : 0;   // arcade
   const opm = opmRaw & 0x3FFFFFFF, opn = opnRaw & 0x3FFFFFFF, oki = okiRaw & 0x3FFFFFFF, okiPin7 = okiRaw & 0x80000000 ? 1 : 0;
+  const kdRaw = head >= 0xB0 ? rd32(u, 0xAC) : 0, kdsc = kdRaw & 0x3FFFFFFF;   // Konami 053260 (arcade Konami)
   const opl3 = !opl2 && !opl1 && head >= 0x60 ? rd32(u, 0x5C) & 0x3FFFFFFF : 0;   // OPL3 (Sound Blaster 16) : joué en OPL2
   const opl = opl2 || opl1 || Math.round(opl3 / 4), oplType = opl2 || opl3 ? 1 : opl1 ? 2 : 0;
   const start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
@@ -61,19 +62,21 @@ function parseVgm(u) {
   if ((head >= 0x54 && rd32(u, 0x50) & 0x40000000) || (opl3 && rd32(u, 0x5C) & 0x40000000) || (opl2 && opl1)) others = true;   // (une seule puce OPL)
   if ((opl2 || opl1) && head >= 0x60 && rd32(u, 0x5C) & 0x3FFFFFFF) others = true;
   const body = u.subarray(0, gd3 > start ? gd3 : u.length);
-  if (!ym && !sn && !gb && !nes && !ay && !opl && !opnb && !opm && !opn && !oki) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES, AY / YM2149, AdLib, Neo-Geo, arcade : YM2151, YM2203, OKI MSM6295)');
+  if (!ym && !sn && !gb && !nes && !ay && !opl && !opnb && !opm && !opn && !oki && !kdsc) throw new Error('aucune puce que ROMsounds sait jouer (Mega Drive, Master System, Game Gear, Game Boy, NES, AY / YM2149, AdLib, Neo-Geo, arcade : YM2151, YM2203, OKI MSM6295, Konami 053260)');
   if (ym && opl) others = true;
   if ((ym && opnb) || (nbRaw & 0x40000000)) others = true;
   if ((opmRaw | opnRaw | okiRaw) & 0x40000000) others = true;   // (le second circuit d'une paire : ignoré)
   const fm = ym ? 'ym' : opnb ? 'opnb' : opm ? 'opm' : opn ? 'opn' : opl ? 'opl' : '';   // une puce FM : la première
   if ([ym, opnb, opm, opn, opl].filter(Boolean).length > 1) others = true;
   const okiUse = oki && !ym && !opnb && !nes ? oki : 0;
-  if (oki && !okiUse) others = true;   // (une puce FM : le YM2612 d'abord ; un seul YM2610)                  // (le FM-1 ne joue qu'une puce FM : le YM2612)
+  if (oki && !okiUse) others = true;
+  const kdscUse = kdsc && !okiUse && !ym && !opnb && !nes ? kdsc : 0;   // (une seule banque d'échantillons : l'OKI d'abord)
+  if ((kdsc && !kdscUse) || (kdRaw & 0x40000000)) others = true;   // (une puce FM : le YM2612 d'abord ; un seul YM2610)                  // (le FM-1 ne joue qu'une puce FM : le YM2612)
   if (fds) others = true;                        // (le FDS de la NES : pas encore)
   return { body, ym, sn, gb, nes, ay, ayType, opl: fm === 'opl' ? opl : 0, oplType, opl3: fm === 'opl' ? opl3 : 0, opnb: fm === 'opnb' ? opnb : 0, opnbType,
-           opm: fm === 'opm' ? opm : 0, opn: fm === 'opn' ? opn : 0, oki: okiUse, okiPin7, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
+           opm: fm === 'opm' ? opm : 0, opn: fm === 'opn' ? opn : 0, oki: okiUse, okiPin7, kdsc: kdscUse, others, total: rd32(u, 0x18), loop: rd32(u, 0x1C) ? rd32(u, 0x20) : 0,
            title: ascii(tags[0] || tags[1]), game: ascii(tags[2] || tags[3]), system: tags[4] || '', author: tags[6] || '',
-           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : opnb ? 'Neo-Geo' : opm || opn || oki ? 'Arcade' : opl3 ? 'PC (Sound Blaster 16)' : opl ? 'PC (AdLib)' : gb ? 'Game Boy' : nes ? 'NES' : ay ? (ayType & 0xF0 ? 'YM2149' : 'AY-3-8910') : 'SN76489') };
+           sys: ascii(tags[4] || tags[5]).slice(0, 22) || (ym ? 'Mega Drive' : opnb ? 'Neo-Geo' : opm || opn || oki || kdsc ? 'Arcade' : opl3 ? 'PC (Sound Blaster 16)' : opl ? 'PC (AdLib)' : gb ? 'Game Boy' : nes ? 'NES' : ay ? (ayType & 0xF0 ? 'YM2149' : 'AY-3-8910') : 'SN76489') };
 }
 
 // longueur d'une commande VGM à la position p (spécification 1.71) ; 0 : fin
@@ -100,7 +103,7 @@ function beatsOf(u, start) {
   const BIN = 441, MAX = 9000;                   // 10 ms, 90 s
   const e = new Float32Array(MAX + 1);
   const vol = [15, 15, 15, 15], ayv = [0, 0, 0], kon = new Uint8Array(18);
-  let okiPend = false;
+  let okiPend = false, kdOn = 0;
   let bd = 0;
   let t = 0, n = 0, latch = 0;
   const hit = w => { const i = Math.floor(t / BIN); if (i < MAX) { e[i] += w; n++; } };
@@ -114,6 +117,7 @@ function beatsOf(u, start) {
     else if (c >= 0x80 && c <= 0x8F) t += c & 15;
     else if ((c === 0x52 || c === 0x58 || c === 0x55) && u[p + 1] === 0x28 && (u[p + 2] & 0xF0)) hit(1);
     else if (c === 0x54 && u[p + 1] === 0x08 && (u[p + 2] & 0x78)) hit(1);                            // YM2151 : key-on
+    else if (c === 0xBA && u[p + 1] === 0x28) { if (u[p + 2] & ~kdOn & 15) hit(1.5); kdOn = u[p + 2]; }   // Konami 053260 : départs
     else if (c === 0xB8 && u[p + 1] === 0x00) { if (okiPend) { hit(1.5); okiPend = false; } else if (u[p + 2] & 0x80) okiPend = true; }   // OKI
     else if (c === 0x59 && u[p + 1] === 0x00 && !(u[p + 2] & 0x80) && (u[p + 2] & 0x3F)) hit(1.5);   // ADPCM-A (Neo-Geo)
     else if (c === 0x58 && u[p + 1] === 0x10 && (u[p + 2] & 0x80)) hit(1);                            // ADPCM-B
@@ -342,6 +346,50 @@ function okiRebuild(u, start, blocks) {
   return { rom: rom.subarray(0, at), ids, lost: lost || starts[1 - chip] > 0, chip };
 }
 
+/* Konami 053260 (arcade Konami) : la ROM d'échantillons (souvent 2 Mo) refaite pour le FM-1. On rejoue les écritures de
+ * registres ; à chaque départ de voix (front montant du registre 0x28), la plage lue (début + 1 à début + longueur, vers
+ * le bas si la voix joue à l'envers) est notée ; les plages sont fusionnées et mises bout à bout dans une ROM neuve.
+ * Les écritures du début (registres 4-6 de chaque voix) sont retirées et réécrites, avec l'adresse neuve, juste avant
+ * chaque départ. Rend { rom, map(adresse) -> adresse neuve, ranges }. */
+function kdscState() { return { st: [0, 0, 0, 0], len: [0, 0, 0, 0], on: 0 }; }
+function kdscReg(k, r, d) {                       // les registres qui comptent pour l'adresse (true : écriture retirée)
+  if (r >= 0x08 && r <= 0x27) {
+    const v = (r - 8) >> 3, o = r & 7;
+    if (o === 2) k.len[v] = (k.len[v] & 0xFF00) | d; else if (o === 3) k.len[v] = (k.len[v] & 0xFF) | d << 8;
+    else if (o === 4) k.st[v] = (k.st[v] & 0x1FFF00) | d; else if (o === 5) k.st[v] = (k.st[v] & 0x1F00FF) | d << 8;
+    else if (o === 6) k.st[v] = (k.st[v] & 0xFFFF) | (d & 0x1F) << 16;
+    return o >= 4 && o <= 6;
+  }
+  return false;
+}
+function kdscRebuild(u, start, blocks) {
+  const bl = blocks.filter(x => x.type === 0x8E && x.chip === 0);
+  const rd = a => { for (const x of bl) if (a >= x.at && a < x.at + x.data.length) return x.data[a - x.at]; return 0; };
+  const k = kdscState(), spans = [];
+  for (let p = start; p < u.length;) {
+    const n = cmdLen(u, p);
+    if (!n || p + n > u.length) break;
+    if (u[p] === 0xBA && !(u[p + 1] & 0x80)) {
+      const r = u[p + 1] & 0x3F, d = u[p + 2];
+      if (r === 0x28) {
+        for (let v = 0; v < 4; v++) if ((d & ~k.on) >> v & 1)
+          spans.push(d >> (v | 4) & 1 ? [Math.max(0, k.st[v] - k.len[v]), k.st[v]] : [k.st[v], Math.min(0x1FFFFF, k.st[v] + k.len[v])]);
+        k.on = d;
+      } else kdscReg(k, r, d);
+    }
+    p += n;
+  }
+  spans.sort((a, b) => a[0] - b[0]);
+  const ranges = [];
+  for (const [a, b] of spans) { const l = ranges[ranges.length - 1]; if (l && a <= l[1] + 1) l[1] = Math.max(l[1], b); else ranges.push([a, b]); }
+  let total = 0;
+  for (const r of ranges) { r.push(total); total += r[1] - r[0] + 1; }
+  const rom = new Uint8Array(total);
+  for (const [a, b, o] of ranges) for (let i = a; i <= b; i++) rom[o + i - a] = rd(i);
+  const map = a => { for (const [x, y, o] of ranges) if (a >= x && a <= y) return o + a - x; return 0; };
+  return { rom, map, ranges };
+}
+
 async function packVgm(u) {
   const v = parseVgm(u);
   const ver = rd32(u, 8), start = ver >= 0x150 && rd32(u, 0x34) ? 0x34 + rd32(u, 0x34) : 0x40;
@@ -359,7 +407,7 @@ async function packVgm(u) {
       if (!nesMem) nesMem = new Uint8Array(0x8000);
       for (let i = 0; i < n - 9; i++) if (at + i >= 0x8000 && at + i <= 0xFFFF) nesMem[at + i - 0x8000] = u[q + 9 + i];
     }
-    if (u[q] === 0x67 && (u[q + 2] === 0x82 || u[q + 2] === 0x83 || u[q + 2] === 0x8B) && n >= 15)   // YM2610 : ADPCM-A, -B ; OKI
+    if (u[q] === 0x67 && (u[q + 2] === 0x82 || u[q + 2] === 0x83 || u[q + 2] === 0x8B || u[q + 2] === 0x8E) && n >= 15)   // YM2610 : ADPCM-A, -B ; OKI
       romBlocks.push({ type: u[q + 2], chip: u[q + 6] >> 7, romSize: rd32(u, q + 7), at: rd32(u, q + 11), data: u.subarray(q + 15, q + n) });
     if (u[q] >= 0x90 && u[q] <= 0x95) dacStream = true;
     q += n;
@@ -384,6 +432,7 @@ async function packVgm(u) {
   const nb = v.opnb ? opnbTrim(u, start, romBlocks) : null;
   const shA = new Uint8Array(0x30), shB = new Uint8Array(0x16);
   const ok = v.oki ? okiRebuild(u, start, romBlocks) : null, okSt = okiState();
+  const kd = v.kdsc ? kdscRebuild(u, start, romBlocks) : null, kdSt = kdscState();
   while (p < u.length) {
     const n = cmdLen(u, p), c = u[p];
     if (!n) break;
@@ -433,6 +482,19 @@ async function packVgm(u) {
         else out.push(u.subarray(p, p + n));
       } else okiBank(okSt, r, d);
     }
+    else if (c === 0xBA && kd) {                    // Konami 053260 : adresses réécrites au départ de chaque voix
+      const r = u[p + 1] & 0x3F, d = u[p + 2];
+      if (u[p + 1] & 0x80) others = true;          // (le second circuit : ignoré)
+      else if (r === 0x28) {
+        if (st) flush(out);
+        for (let vo = 0; vo < 4; vo++) if ((d & ~kdSt.on) >> vo & 1) {
+          const a2 = kd.map(kdSt.st[vo]), b = 0x0C + vo * 8;
+          out.push(Uint8Array.of(0xBA, b, a2 & 255, 0xBA, b + 1, a2 >> 8 & 255, 0xBA, b + 2, a2 >> 16));
+        }
+        kdSt.on = d;
+        out.push(u.subarray(p, p + n));
+      } else if (!kdscReg(kdSt, r, d) && (r >= 0x08 || r === 0x2A || r === 0x2C || r === 0x2D || r === 0x2F) && r <= 0x2F) { if (st) flush(out); out.push(u.subarray(p, p + n)); }
+    }
     else if (v.opl3 && (c === 0x5E || c === 0x5F)) {   // OPL3 -> OPL2 : la première banque de 9 voies
       const [w, lost] = opl3to2(c, u[p + 1], u[p + 2]);
       if (lost) others = true;
@@ -446,7 +508,7 @@ async function packVgm(u) {
   const cat = parts => { const t = new Uint8Array(parts.reduce((x, y) => x + y.length, 0)); let o = 0; for (const q of parts) { t.set(q, o); o += q.length; } return t; };
   const end = Uint8Array.of(0x66);
   if (ok && ok.lost) others = true;
-  const P = v.ym ? cat(pcm) : nb ? cat([nb.a, nb.b]) : ok ? ok.rom : nesMem || new Uint8Array(0), A = await deflateRaw(cat([...a, end])), B = loop ? await deflateRaw(cat([...b, end])) : new Uint8Array(0);
+  const P = v.ym ? cat(pcm) : nb ? cat([nb.a, nb.b]) : ok ? ok.rom : kd ? kd.rom : nesMem || new Uint8Array(0), A = await deflateRaw(cat([...a, end])), B = loop ? await deflateRaw(cat([...b, end])) : new Uint8Array(0);
   const beat = beatsOf(u, start);
   const head = new Uint8Array(104), dv = new DataView(head.buffer);
   head.set([0x52, 0x53, 0x4D, 0x37]);                 // "RSM7"
@@ -462,9 +524,11 @@ async function packVgm(u) {
   dv.setUint32(72, v.opnb, true); dv.setUint32(76, v.opnbType, true); dv.setUint32(80, nb ? nb.a.length : 0, true);   // YM2610
   dv.setUint32(88, v.opm, true); dv.setUint32(92, v.opn, true);                            // arcade : YM2151, YM2203
   dv.setUint32(96, v.oki ? (v.oki | (v.okiPin7 ? 0x80000000 : 0)) >>> 0 : 0, true);         // OKI MSM6295
+  dv.setUint32(100, v.kdsc, true);                                                         // Konami 053260
   const blob = cat([head, P, A, B]);
   if (nb) Object.assign(v, { adpcm: nb.a.length + nb.b.length, adpcmRom: nb.romA + (nb.romB || 0) });
   if (ok) Object.assign(v, { okiRom: ok.rom.length, okiPhrases: ok.ids.size });
+  if (kd) Object.assign(v, { kdscRom: kd.rom.length, kdscRomFull: romBlocks.filter(x => x.type === 0x8E).reduce((m, x) => Math.max(m, x.romSize), 0) });
   return Object.assign(v, { blob, bpm: beat.bpm, phase: beat.phase, pcmLen: P.length, aLen: A.length, bLen: B.length, dacStream, raw: u.length });
 }
 

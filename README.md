@@ -24,7 +24,7 @@ Le FM-1 le joue aussitôt et le **garde en mémoire flash** (bibliothèque d'env
   (« RSM6 »). À 0,1-2 % de libvgm sur le morceau de test ; coût sur PC inférieur au YM2612 (4 voies FM).
 - Arcade : YM2151 (`firmware/ext/ym2151`, ym2151.c de MAME via libvgm, GPL-2.0+ ; tables figées à la fréquence native
   par `tools/gen_ym2151_tables.c`, 4 Ko de RAM), YM2203 (fmopn.c, même place que le YM2612 ; son SSG par `ay_apu.h`) et
-  OKI MSM6295 (`oki.h`, écrit d'après okim6295.c). Une puce FM par morceau (YM2612, YM2610, YM2151, YM2203, puis OPL).
+  OKI MSM6295 (`oki.h`, écrit d'après okim6295.c), Konami 053260 (`k053260.h`, écrit d'après k053260.c ; à la place de l'OKI). Une puce FM par morceau (YM2612, YM2610, YM2151, YM2203, puis OPL).
   La page refait la ROM de l'OKI : seules les phrases jouées, banques (registre 0x0F, NMK112) résolues et retirées,
   numéros de phrase réécrits (« RSM7 ») ; 256 Ko au plus. Morceaux de test (CPS1, YM2203) à 0-2 % de libvgm. Pas
   encore : Sega PCM, QSound, puces Konami / Namco, le second circuit des paires de puces.

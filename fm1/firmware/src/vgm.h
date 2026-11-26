@@ -32,7 +32,7 @@ typedef struct {
     uint32_t ay_clock, ay_type;         /* AY-3-8910 / YM2149 (type VGM : 0x00 AY, 0x10 YM2149...) */
     uint32_t opl_clock, opl_type;
     uint32_t opnb_clock, opnb_type, adpcm_a_len;
-    uint32_t opm_clock, opn_clock, oki_clock;   /* arcade : YM2151, YM2203, OKI MSM6295 (bit 31 : broche 7 haute) */   /* YM2610 (type bit 0 : YM2610B) ; la banque : ADPCM-A puis ADPCM-B */       /* OPL2 / OPL (type : 1 YM3812, 2 YM3526) */
+    uint32_t opm_clock, opn_clock, oki_clock, kdsc_clock;   /* (kdsc : Konami 053260, à la place de l'OKI) */   /* arcade : YM2151, YM2203, OKI MSM6295 (bit 31 : broche 7 haute) */   /* YM2610 (type bit 0 : YM2610B) ; la banque : ADPCM-A puis ADPCM-B */       /* OPL2 / OPL (type : 1 YM3812, 2 YM3526) */
     uint32_t is_mod;                    /* 1 : un module Amiga (mod.h), pas des commandes VGM */             /* tempo deviné par la page (BPM x 100, 0 : inconnu), premier temps (trames) */
 } vgm_t;
 
@@ -49,6 +49,7 @@ static void vgm_opnb(uint32_t port, uint32_t reg, uint32_t val);
 static void vgm_opm(uint32_t reg, uint32_t val);
 static void vgm_opn(uint32_t reg, uint32_t val);
 static void vgm_oki(uint32_t reg, uint32_t val);
+static void vgm_kdsc(uint32_t reg, uint32_t val);
 
 static uint32_t vgm_next(vgm_t *v)
 {
@@ -73,6 +74,11 @@ static uint32_t vgm_next(vgm_t *v)
         if (c == 0xB8) {                       /* OKI MSM6295 (le 2e circuit, bit 7 : ignoré) */
             a = vgm_get(); b = vgm_get();
             if (b >= 0 && !(a & 0x80)) vgm_oki((uint32_t)a, (uint32_t)b);
+            continue;
+        }
+        if (c == 0xBA) {                       /* Konami 053260 (le 2e circuit, bit 7 : ignoré) */
+            a = vgm_get(); b = vgm_get();
+            if (b >= 0 && !(a & 0x80)) vgm_kdsc((uint32_t)a, (uint32_t)b);
             continue;
         }
         if (c == 0x5A || c == 0x5B) {          /* YM3812 (OPL2 : AdLib, Sound Blaster), YM3526 (OPL) */

@@ -21,6 +21,7 @@
 #include "nes_apu.h"
 #include "ay_apu.h"
 #include "oki.h"
+#include "k053260.h"
 #include "mod.h"
 #include "vgm.h"
 #include "../firmware/ext/uzlib/uzlib.h"
@@ -73,6 +74,7 @@ static void vgm_nes(uint32_t reg, uint32_t val) { nes_write(&nes, reg, val); }
 static void vgm_ay(uint32_t reg, uint32_t val) { ay_write(&ay, reg, val); }
 static void *opl, *opnb, *opm, *opn;
 static oki_t oki;
+static kdsc_t kdsc;
 static void vgm_opm(uint32_t reg, uint32_t val) { if (opm) ym2151_write_reg(opm, (UINT8)reg, (UINT8)val); }
 static void vgm_opn(uint32_t reg, uint32_t val)
 {
@@ -81,6 +83,7 @@ static void vgm_opn(uint32_t reg, uint32_t val)
     ym2203_write(opn, 0, (UINT8)reg); ym2203_write(opn, 1, (UINT8)val);
 }
 static void vgm_oki(uint32_t reg, uint32_t val) { oki_write(&oki, reg, val); }
+static void vgm_kdsc(uint32_t reg, uint32_t val) { kdsc_write(&kdsc, reg, val); }
 static void vgm_opnb(uint32_t port, uint32_t reg, uint32_t val)
 {
     if (!opnb) return;
@@ -151,7 +154,8 @@ static void apply_mute(void)
     psg.mute = (uint8_t)(song.psg_clock ? mute >> n & 15u : 0u); if (song.psg_clock) n += 4u;
     gb.mute = (uint8_t)(song.gb_clock ? mute >> n & 15u : 0u); if (song.gb_clock) n += 4u;
     nes.mute = (uint8_t)(song.nes_clock ? mute >> n & 31u : 0u); if (song.nes_clock) n += 5u;
-    oki.mute = (uint8_t)(song.oki_clock ? mute >> n & 15u : 0u); if (song.oki_clock) n += 4u;
+    oki.mute = (uint8_t)(song.oki_clock ? mute >> n & 15u : 0u);
+    kdsc.mute = (uint8_t)(song.kdsc_clock ? mute >> n & 15u : 0u); if (song.oki_clock || song.kdsc_clock) n += 4u;
     if (song.opl_clock) {
         uint32_t mm = mute >> n;
         if (opl) opl_set_mute_mask(opl, (mm & 0x1FFu) | (mm >> 9 & 1u ? 0x3E00u : 0u));
@@ -197,12 +201,13 @@ EXPORT("pv_load") int pv_load(uint32_t size)
     song.opm_clock = hl > 88u ? rd32(m + 88) : 0u;
     song.opn_clock = hl > 88u ? rd32(m + 92) : 0u;
     song.oki_clock = hl > 88u ? rd32(m + 96) : 0u;
+    song.kdsc_clock = hl > 88u && !song.oki_clock ? rd32(m + 100) : 0u;
     if (song.opnb_clock && !song.ay_clock) { song.ay_clock = song.opnb_clock / 4u; song.ay_type = 0x10u; }
     if (song.opn_clock && !song.ay_clock) { song.ay_clock = song.opn_clock / 2u; song.ay_type = 0x10u; }
     song.pcm = m + hl; song.pcm_len = pcm;
     part_a = m + hl + pcm; len_a = a;
     part_b = part_a + a; len_b = b;
-    if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock && !song.ay_clock && !song.opl_clock && !song.opnb_clock && !song.opm_clock && !song.opn_clock && !song.oki_clock) return 3;
+    if (!song.ym_clock && !song.psg_clock && !song.gb_clock && !song.nes_clock && !song.ay_clock && !song.opl_clock && !song.opnb_clock && !song.opm_clock && !song.opn_clock && !song.oki_clock && !song.kdsc_clock) return 3;
     yc = song.ym_clock ? song.ym_clock : 7670453u;
     if (yc > 9000000u) yc = 9000000u;
     rate = yc / 144u;
@@ -229,6 +234,7 @@ EXPORT("pv_load") int pv_load(uint32_t size)
         ym2612_reset_chip(ym);
     }
     oki_init(&oki, song.oki_clock & 0x7FFFFFFFu, song.oki_clock >> 31, song.oki_clock ? song.pcm : 0, song.pcm_len);
+    kdsc_init(&kdsc, song.kdsc_clock, song.kdsc_clock ? song.pcm : 0, song.pcm_len);
     opl = 0;
     if (song.opl_clock && !song.ym_clock && !opnb && !opm && !opn) {     /* comme song_start (firmware/src/romsounds.c) */
         uint32_t oc = song.opl_clock > 4000000u ? 4000000u : song.opl_clock;
@@ -294,6 +300,7 @@ EXPORT("pv_render") uint32_t pv_render(uint32_t frames)
         if (song.nes_clock) nes_render(&nes, mix + 2u * o, n);
         if (song.ay_clock) ay_render(&ay, mix + 2u * o, n);
         if (song.oki_clock) oki_render(&oki, mix + 2u * o, n);
+        if (song.kdsc_clock) kdsc_render(&kdsc, mix + 2u * o, n);
         wait -= n; left -= n; o += n; played += n;
     }
     done = o;
