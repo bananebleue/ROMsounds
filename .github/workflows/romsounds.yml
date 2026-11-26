@@ -183,6 +183,10 @@ jobs:
           node ../tests/wav_check.js build/host/romsounds.wav 0.2-1.9:~259 2.0-3.8:~518 4.0-5.7:1000 7.2-7.4:~259 7.5-7.65:0 7.75-8.4:~259
           node ../tests/preview_test.js build/mod.rsm 8.4 build/pv_mod.wav
           node ../tests/wav_compare.js build/pv_mod.wav build/host/romsounds.wav 1 8 1
+          # les molettes et boutons de l'image du FM-1, dans la page : hauteur +12 (une octave), tempo 200 %, vinyl brake
+          node ../tests/preview_test.js build/mod.rsm 4 build/pv_fx1.wav 0:enc:2:12 && node ../tests/wav_check.js build/pv_fx1.wav 0.2-1.9:~518 2.0-3.8:~1036
+          node ../tests/preview_test.js build/mod.rsm 4 build/pv_fx2.wav 0:enc:1:20 && node ../tests/wav_check.js build/pv_fx2.wav 0.2-0.9:~259 1.05-1.85:~518
+          node ../tests/preview_test.js build/mod.rsm 4 build/pv_fx3.wav 0.5:btn:6:1 && node ../tests/wav_check.js build/pv_fx3.wav 0.1-0.4:~259 2.0-3.9:0
           # module réduit par la page (RSMD 2 : échantillon gardé 1 point sur 2) : mêmes hauteurs, même son dans la page
           node ../tests/make_test_mod.js build/testl.mod long
           node -e 'const R=require("../web/romsounds.js"),fs=require("fs"),m=new Uint8Array(fs.readFileSync("build/testl.mod")),r=R.shrinkMod(m,R.packMod(m,"t").blob.length-10);if(r.sh[1]!==1||!r.fits)throw new Error("réduction");fs.writeFileSync("build/mods.rsm",R.packMod(r.u,"t",r.sh).blob)'

@@ -141,6 +141,16 @@
              display:flex; align-items:flex-end; justify-content:center; font:400 calc(var(--u) * 1.3)/1 var(--px); color:#6a6455; padding-bottom:4px; }
   .keys .b { position:absolute; top:0; height:58%; background:#24262c; border-radius:0 0 4px 4px; display:flex; align-items:flex-end; justify-content:center;
             font:400 calc(var(--u) * 1.15)/1 var(--px); color:#cfc9bb; padding-bottom:3px; }
+  .ctl.play .cap { touch-action:none; }
+  .ctl.lit .cap { box-shadow:0 0 0 3px var(--mint), 0 calc(var(--u) * .5) 0 #111; }
+  .ctl.armed .cap { box-shadow:0 0 0 3px var(--gold), 0 calc(var(--u) * .5) 0 #111; }
+  .ctl.held .cap { transform:translateY(calc(var(--u) * .4)); }
+  .keys .w, .keys .b { cursor:pointer; }
+  .keys .on { box-shadow:inset 0 -3px 0 #c9c3b6, inset 0 0 0 3px var(--mint); }
+  .keys .b.on { box-shadow:inset 0 0 0 3px var(--mint); }
+  .keys .muted { opacity:.55; }
+  .screen .msg { color:var(--gold); min-height:2.6em; }
+  .screen .sum { color:var(--dim); margin-top:auto; }
   .deck-actions { margin-top:18px; }
   .legend { color:var(--dim); margin:12px 0 0; }
   @container (max-width:560px) { .fm1 .upper { grid-template-columns:1fr; justify-items:center; } .fm1 { --u:clamp(4px, calc(100cqw / 62), 8px); } }
@@ -164,12 +174,14 @@
 <main>
   <section class="win deck" aria-labelledby="deckTitle">
     <h2 id="deckTitle">Commandes des effets</h2>
-    <p class="sub">Choisis une molette ou un bouton sur le FM-1 ci-dessous, puis sa fonction dans l’écran. Les touches du clavier coupent les voix ; tenir SAVE ou le bouton « Rappeler un preset » et appuyer sur une des 12 premières touches enregistre ou rappelle un preset.</p>
+    <p class="sub" id="deckHelpPlay">Le FM-1 ci-dessous joue le morceau ouvert dans le lecteur, sur cet ordinateur, comme le vrai : PLAY lance ou met en pause, REC revient au début. Molettes : la roulette de la souris, un glissé vers le haut ou le bas, un clic à gauche (−) ou à droite (+), ou les flèches du clavier. Boutons : tenir pour la boucle et le beat roll. Touches : couper ou remettre une voix ; après SAVE, « Rappeler un preset » ou « Solo », une touche enregistre, rappelle ou isole.</p>
+    <p class="sub" id="deckHelpEdit" hidden>Choisis une molette ou un bouton sur le FM-1 ci-dessous, puis sa fonction dans l’écran. « Enregistrer dans le FM-1 » y envoie ces choix ; ils servent aussi tout de suite ici.</p>
     <div class="fm1" id="fm1"></div>
-    <p class="legend">Les numéros des touches : les voix, de gauche à droite, et avec SAVE ou « Rappeler un preset », les presets 1 à 12.</p>
+    <p class="legend">Les numéros des touches : les voix, de gauche à droite (allumée : la voix joue), et avec SAVE ou « Rappeler un preset », les presets 1 à 12.</p>
     <div class="row deck-actions">
-      <button id="mapSend" disabled>Enregistrer dans le FM-1</button>
-      <button class="ghost" id="mapReset">Revenir aux réglages d’origine</button>
+      <button class="ghost" id="mapEdit" aria-pressed="false">Modifier l’affectation</button>
+      <button id="mapSend" disabled hidden>Enregistrer dans le FM-1</button>
+      <button class="ghost" id="mapReset" hidden>Revenir aux réglages d’origine</button>
       <span class="sub grow" id="mapInfo" style="margin:0"></span>
     </div>
   </section>
@@ -185,6 +197,7 @@
     </div>
     <div class="row" id="pvRow" hidden style="margin-top:12px">
       <button class="ghost" id="pvPlay" aria-label="Écouter le morceau dans la page">▶ Écouter</button>
+      <button class="ghost" id="pvPlayRed" hidden aria-label="Écouter la version réduite pour le FM-1">▶ Réduit</button>
       <input type="range" id="pvSeek" min="0" max="1000" value="0" style="flex:1 1 120px; min-width:0" aria-label="Position dans le morceau">
       <span id="pvTime" class="sub" style="margin:0; white-space:nowrap">0:00 / 0:00</span>
     </div>
@@ -581,6 +594,7 @@ async function sndhToVgm(u, grid) {
 }
 let modSrc = null;                               // module trop gros, en attente de « Réduire » : { u, name }
 async function showVgm(u, name, shrunk) {
+  const wasOn = pvOn;                             // (morceau suivant pendant l'écoute : on continue d'écouter)
   vgm = null; $('vgmBar').hidden = true; $('vgmShrink').hidden = true; if (!shrunk) modSrc = null;
   try {
     let raw = await RSVGM.gunzipIf(u);
@@ -600,24 +614,23 @@ async function showVgm(u, name, shrunk) {
     if (v.kdscRom !== undefined) lines.push('Konami 053260 : ' + kb(v.kdscRom) + ' d’échantillons gardés (ceux que le morceau joue) sur ' + kb(v.kdscRomFull) + ' de ROM.');
     if (v.okiRom !== undefined) lines.push('OKI MSM6295 : ' + v.okiPhrases + ' phrases jouées, ' + kb(v.okiRom) + ' d’échantillons gardés.');
     if (v.dacStream) lines.push('Flux DAC (VGM 1.60) : convertis par la page pour le FM-1.');
-    if (shrunk) lines.push('Réduit pour le FM-1 : ' + shrunk.notes.join(' ; ') + '. Écoute l’aperçu avant d’envoyer.');
+    if (shrunk) lines.push('Réduit pour le FM-1 : ' + shrunk.notes.join(' ; ') + '. Compare « ▶ Original » et « ▶ Réduit » avant d’envoyer.');
     if (sndh) lines.push('Atari ST (SNDH) : le programme de l’Atari joué ici, ' + sndh.meta.hz + ' appels par seconde' + (sndh.meta.tunes > 1 ? ' ; morceau 1 sur ' + sndh.meta.tunes : '') + (sndh.guessed ? ' ; durée inconnue : 3 min' : '') + '.');
-    if (v.blob.length > VGM_MAX && (v.isMod || v.kdsc || sndh) && !shrunk) {
-      modSrc = { u: sndh ? sndh.u : raw, name, sndh: !!sndh };
-      $('vgmLog').textContent = lines.filter(Boolean).join('\n') + '\n\nTrop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus). ' + (v.isMod ? '« Réduire pour le FM-1 » retire ce que le morceau ne joue jamais, puis baisse la qualité des plus gros échantillons, juste ce qu’il faut.' : sndh ? '« Réduire pour le FM-1 » baisse la qualité des échantillons joués par les volumes du YM, juste ce qu’il faut.' : '« Réduire pour le FM-1 » baisse la qualité des échantillons (1 point sur 2, sur 4 ou sur 8), juste ce qu’il faut.');
+    const big = v.blob.length > VGM_MAX, canShrink = big && (v.isMod || v.kdsc || sndh) && !shrunk;
+    if (canShrink) {
+      modSrc = { u: sndh ? sndh.u : raw, name, sndh: !!sndh, orig: v };
+      lines.push('', 'Trop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus) : tu peux l’écouter ici. ' + (v.isMod ? '« Réduire pour le FM-1 » retire ce que le morceau ne joue jamais, puis baisse la qualité des plus gros échantillons, juste ce qu’il faut.' : sndh ? '« Réduire pour le FM-1 » baisse la qualité des échantillons joués par les volumes du YM, juste ce qu’il faut.' : '« Réduire pour le FM-1 » baisse la qualité des échantillons (1 point sur 2, sur 4 ou sur 8), juste ce qu’il faut.'));
       $('vgmShrink').hidden = false;
-      ready(); return;
-    }
-    if (v.blob.length > VGM_MAX) throw new Error('trop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus)' + (shrunk ? ' même réduit' : ''));
-    pvStop(); pvF0 = 0;
-    vgm = v;
-    $('vgmLog').textContent = lines.filter(Boolean).join('\n');
-    $('pvRow').hidden = false; pvShow(0);
+    } else if (big) lines.push('', 'Trop gros pour le FM-1 (' + kb(v.blob.length) + ', ' + kb(VGM_MAX) + ' au plus)' + (shrunk ? ', même réduit' : '') + ' : tu peux seulement l’écouter ici.');
+    vgm = big ? null : v;                          // (ce qu'on peut envoyer au FM-1)
+    $('vgmLog').textContent = lines.filter(Boolean).join('\n').replace(/\n\n+/g, '\n\n');
+    pvSet(shrunk && modSrc && modSrc.orig ? modSrc.orig : v, shrunk ? v : null);
+    if (wasOn) pvStart(0);
     $('vgmBpmRow').hidden = false;
     $('vgmBpm').value = v.bpm || 120;
     $('vgmBpmNote').textContent = v.bpm ? 'deviné d’après les notes ; corrige-le si le beat roll tombe à côté' : 'pas deviné : 120 par défaut';
     planVgm();
-  } catch (e) { $('vgmLog').textContent = 'Fichier refusé : ' + (e.message || e); }
+  } catch (e) { $('vgmLog').textContent = 'Fichier refusé : ' + (e.message || e); pvSet(null, null); }
   ready();
 }
 
@@ -642,7 +655,7 @@ $('vgmShrink').addEventListener('click', async () => {
 $('vgmFile').addEventListener('change', async () => {
   const f = $('vgmFile').files && $('vgmFile').files[0];
   vgm = null; pack = []; $('vgmBar').hidden = true; $('vgmPickRow').hidden = true; $('vgmBpmRow').hidden = true;
-  pvStop(); $('pvRow').hidden = true;
+  pvSet(null, null);
   if (!f) { $('vgmLog').textContent = 'Aucun fichier.'; ready(); return; }
   const u = new Uint8Array(await f.arrayBuffer());
   if (u[0] === 0x50 && u[1] === 0x4B) {         // .zip : un pack
@@ -782,7 +795,9 @@ okBox.addEventListener('change', ready);
 $('detect').addEventListener('click', detect);
 
 /* ---------- écouter dans la page : le lecteur du FM-1 en WebAssembly (fm1/preview/preview.c -> preview.wasm) ---------- */
-let pvx = null, pvCtx = null, pvGain = null, pvSrc = [], pvTimer = 0, pvNext = 0, pvT0 = 0, pvF0 = 0, pvOn = false, pvBlob = null, pvEnd = false;
+let pvx = null, pvCtx = null, pvGain = null, pvSrc = [], pvTimer = 0, pvNext = 0, pvF0 = 0, pvOn = false, pvEnd = false, pvMarks = [];
+let pvOrig = null, pvRed = null, pvWhich = 'orig';   // l'original (même trop gros pour le FM-1) et la version réduite
+const pvCur = () => (pvWhich === 'red' && pvRed) || pvOrig;
 const fmt = f => mmss(f / 44100);
 async function pvWasm() {
   if (pvx) return pvx;
@@ -791,19 +806,37 @@ async function pvWasm() {
   const { instance } = await WebAssembly.instantiate(await r.arrayBuffer(), {});
   return (pvx = instance.exports);
 }
-function pvLoad() {                              // le morceau choisi, depuis le début
-  const x = pvx;
-  new Uint8Array(x.memory.buffer).set(vgm.blob, x.pv_buf());
-  const e = x.pv_load(vgm.blob.length);
+function pvLoad() {                              // le morceau choisi, depuis le début (avec le tempo du beat roll de la page)
+  const x = pvx, v = pvCur(), bpm = +$('vgmBpm').value;
+  RSVGM.setBpm(v.blob, bpm >= 30 && bpm <= 400 ? bpm : 0);
+  new Uint8Array(x.memory.buffer).set(v.blob, x.pv_buf());
+  const e = x.pv_load(v.blob.length);
   if (e) throw new Error('morceau illisible (' + e + ')');
-  pvBlob = vgm.blob; pvEnd = false;
+  pvEnd = false;
 }
-function pvShown() {                              // la position entendue (le calcul a de l'avance)
+/** Mettre les morceaux à écouter : l'original, et la version réduite s'il y en a une (null sinon) */
+function pvSet(orig, red) {
+  pvStop(); pvF0 = 0;
+  pvOrig = orig; pvRed = red; pvWhich = red ? 'red' : 'orig';
+  $('pvRow').hidden = !orig;
+  $('pvPlayRed').hidden = !red;
+  pvButtons(); pvShow(0); fm1Refresh();
+}
+function pvButtons() {
+  $('pvPlay').textContent = pvOn && pvWhich === 'orig' ? '■ Arrêter' : pvRed ? '▶ Original' : '▶ Écouter';
+  $('pvPlay').setAttribute('aria-label', pvRed ? 'Écouter le fichier original' : 'Écouter le morceau dans la page');
+  $('pvPlayRed').textContent = pvOn && pvWhich === 'red' ? '■ Arrêter' : '▶ Réduit';
+  $('pvPlay').classList.toggle('on', pvOn && pvWhich === 'orig');
+  $('pvPlayRed').classList.toggle('on', pvOn && pvWhich === 'red');
+}
+function pvShown() {                              // la position entendue (le calcul a de l'avance ; le tempo peut changer)
   if (!pvOn || !pvCtx) return pvF0;
-  return pvF0 + Math.max(0, (pvCtx.currentTime - pvT0) * 44100);
+  const t = pvCtx.currentTime;
+  for (const m of pvMarks) if (t >= m.t0 && t < m.t1) return m.p0 + (m.p1 - m.p0) * (t - m.t0) / (m.t1 - m.t0);
+  return pvMarks.length && t >= pvMarks[pvMarks.length - 1].t1 ? pvMarks[pvMarks.length - 1].p1 : pvF0;
 }
 function pvShow(f) {
-  const tot = vgm ? vgm.total : 0, loop = vgm ? vgm.loop : 0;
+  const v = pvCur(), tot = v ? v.total : 0, loop = v ? v.loop : 0;
   let t = f;
   if (tot && t > tot && loop && loop <= tot) t = tot - loop + (t - tot) % loop;   // (comme l'écran du FM-1)
   $('pvTime').textContent = fmt(t) + ' / ' + fmt(tot);
@@ -811,8 +844,8 @@ function pvShow(f) {
 }
 function pvPump() {
   const x = pvx;
-  while (!pvEnd && pvNext < pvCtx.currentTime + 0.8) {
-    const n = x.pv_render(4096);
+  while (!pvEnd && pvNext < pvCtx.currentTime + 0.5) {
+    const p0 = x.pv_played(), n = x.pv_render(2048);
     if (!n) { pvEnd = true; break; }
     const s = new Int16Array(x.memory.buffer, x.pv_out(), n * 2), b = pvCtx.createBuffer(2, n, 44100);
     const L = b.getChannelData(0), R = b.getChannelData(1);
@@ -821,41 +854,58 @@ function pvPump() {
     src.buffer = b; src.connect(pvGain); src.start(pvNext);
     src.onended = () => { pvSrc = pvSrc.filter(q => q !== src); };
     pvSrc.push(src);
+    pvMarks.push({ t0: pvNext, t1: pvNext + n / 44100, p0, p1: x.pv_played() });
     pvNext += n / 44100;
   }
+  pvMarks = pvMarks.filter(m => m.t1 > pvCtx.currentTime - 1);
   pvShow(pvShown());
+  fm1Live();
   if (pvEnd && pvCtx.currentTime > pvNext) pvStop(true);
 }
 async function pvStart(atFrame) {
   try {
     await pvWasm();
-    if (!pvCtx) { pvCtx = new (window.AudioContext || window.webkitAudioContext)(); pvGain = pvCtx.createGain(); pvGain.gain.value = 0.9; pvGain.connect(pvCtx.destination); }
+    if (!pvCtx) { pvCtx = new (window.AudioContext || window.webkitAudioContext)(); pvGain = pvCtx.createGain(); pvGain.gain.value = vol; pvGain.connect(pvCtx.destination); }
     await pvCtx.resume();
     pvLoad();
-    while (atFrame && pvx.pv_played() + 4096 <= atFrame && pvx.pv_render(4096)) { /* avancer sans jouer */ }
-    pvF0 = pvx.pv_played(); pvT0 = pvNext = pvCtx.currentTime + 0.08; pvOn = true;
-    $('pvPlay').textContent = '■ Arrêter';
+    applyMute();
+    while (atFrame && pvx.pv_played() + 2048 <= atFrame && pvx.pv_render(2048)) { /* avancer sans jouer */ }
+    pvF0 = pvx.pv_played(); pvNext = pvCtx.currentTime + 0.06; pvMarks = []; pvOn = true;
+    pvButtons();
     pvPump();
-    pvTimer = setInterval(pvPump, 100);
+    pvTimer = setInterval(pvPump, 60);
   } catch (e) { pvStop(); $('vgmLog').textContent = 'Écoute impossible : ' + (e.message || e); }
 }
 function pvStop(atEnd) {
   const at = pvShown();
   clearInterval(pvTimer); pvTimer = 0;
   for (const s of pvSrc) { try { s.stop(); } catch (e) { /* déjà fini */ } }
-  pvSrc = [];
+  pvSrc = []; pvMarks = [];
   pvOn = false; pvF0 = atEnd ? 0 : at;
-  $('pvPlay').textContent = '▶ Écouter';
+  pvButtons();
   if (atEnd) pvShow(0);
+  fm1Live();
 }
-$('pvPlay').addEventListener('click', () => { if (pvOn) pvStop(); else if (vgm) pvStart(pvF0); });
+function pvToggle(which) {                       // un bouton du lecteur : écouter (ou changer de version au même endroit), arrêter
+  if (!pvOrig) return;
+  if (pvOn && pvWhich === which) { pvStop(); return; }
+  const at = pvShown();
+  if (pvOn) pvStop();
+  pvWhich = which;
+  pvStart(at);
+}
+$('pvPlay').addEventListener('click', () => pvToggle('orig'));
+$('pvPlayRed').addEventListener('click', () => pvToggle('red'));
 $('pvSeek').addEventListener('change', () => {
-  if (!vgm) return;
-  const f = Math.round($('pvSeek').value / 1000 * vgm.total);
+  const v = pvCur();
+  if (!v) return;
+  const f = Math.round($('pvSeek').value / 1000 * v.total);
   if (pvOn) { pvStop(); pvStart(f); } else { pvF0 = f; pvShow(f); }
 });
+$('vgmBpm').addEventListener('change', () => { if (pvOn) { const at = pvShown(); pvStop(); pvStart(at); } });
 
-/* ---------- le FM-1 dessiné : attribuer molettes et boutons (firmware : SysEx 07 / 08, romsounds.c) ---------- */
+/* ---------- le FM-1 dessiné : jouer (molettes et boutons agissent sur le lecteur de la page, comme sur le FM-1) ou
+ * modifier l'attribution des molettes et boutons (firmware : SysEx 07 / 08, romsounds.c) ---------- */
 const ENC_FN = ['Aucune', 'Tempo', 'Hauteur', 'Filtre (passe-bas, passe-haut)', 'Écho (répétitions)', 'Temps de l’écho et de la boucle', 'Grain', 'Phaser, flanger'];
 const ENC_SHORT = ['—', 'Tempo', 'Hauteur', 'Filtre', 'Écho', 'Temps', 'Grain', 'Phaser / flanger'];
 const BTN_FN = ['Aucune', 'Hauteur −1', 'Hauteur +1', 'Boucle (tenir)', 'Beat roll ½ temps (tenir)', 'Beat roll 1 temps (tenir)', 'Vinyl brake',
@@ -864,7 +914,10 @@ const BTN_SHORT = ['—', 'Hauteur −', 'Hauteur +', 'Boucle', 'Roll ½', 'Roll
 const ENC_NAMES = ['KNOB 1', 'KNOB 2', 'KNOB 3', 'KNOB 4', 'ALGORITHM', 'PRESETS'];
 const BTN_NAMES = ['OCT−', 'OCT+', 'FX', 'SEL', 'ENV', 'LFO', 'EDIT', 'GLO', 'HOME', 'SAVE', 'ARP', 'SEQ'];
 const MAP_DEF = { enc: [1, 7, 6, 3, 5, 4], btn: [1, 2, 3, 11, 7, 6, 10, 0, 8, 9, 4, 5] };
-let map = { enc: [...MAP_DEF.enc], btn: [...MAP_DEF.btn] }, pick = null;
+const LP_HZ = [0, 8000, 6489, 5264, 4270, 3463, 2809, 2279, 1849, 1499, 1216, 987, 800, 649, 527, 427, 346, 281, 228, 185, 150];
+const HP_HZ = [0, 40, 52, 66, 86, 111, 143, 184, 237, 305, 394, 508, 655, 844, 1088, 1403, 1809, 2333, 3008, 3878, 5000];
+let map = { enc: [...MAP_DEF.enc], btn: [...MAP_DEF.btn] }, pick = null, editing = false;
+let vol = 0.9, armed = 0, fm1Msg = '', fm1MsgT = 0;   // armed : 9 (SAVE), 10 (rappel), 11 (solo) en attente d'une touche
 const mapInfo = t => { $('mapInfo').textContent = t; };
 function setMap(m, dirty) { map = { enc: [...m.enc], btn: [...m.btn] }; mapDirty = dirty; drawFm1(); ready(); }
 async function fetchMap(dev) {
@@ -876,17 +929,185 @@ async function fetchMap(dev) {
   finally { dev.link.input.removeEventListener('midimessage', on); }
   return got;
 }
+const say = t => { fm1Msg = t; fm1MsgT = Date.now(); fm1Refresh(); };
+const live = () => pvx && pvOn;
+const fxGet = i => pvx ? pvx.pv_get(i) : 0;
+let muteMask = 0;
+function applyMute() { if (pvx) pvx.pv_set(7, muteMask); }
+function presets() { try { return JSON.parse(localStorage.getItem('romsounds-presets')) || []; } catch (e) { return []; } }
+const signed = v => (v > 0 ? '+' : '') + v;
+function encMsg(fn) {
+  const g = fxGet;
+  switch (fn) {
+    case 1: return 'Tempo ' + Math.floor(g(0) * 100 / 256) + ' %';
+    case 2: return 'Hauteur ' + signed(g(1)) + ' demi-tons';
+    case 3: return !g(2) ? 'Filtre éteint' : g(2) < 0 ? 'Passe-bas ' + LP_HZ[-g(2)] + ' Hz' : 'Passe-haut ' + HP_HZ[g(2)] + ' Hz';
+    case 4: return !g(11) ? 'Écho : morceau trop gros' : !g(3) ? 'Écho éteint' : 'Écho : ' + g(3) + (g(3) > 1 ? ' répétitions' : ' répétition');
+    case 5: return 'Temps écho, boucle ' + g(4) * 50 + ' ms';
+    case 6: return g(5) ? 'Grain ' + g(5) : 'Grain éteint';
+    case 7: return !g(6) ? 'Modulation éteinte' : (g(6) < 0 ? 'Phaser ' : 'Flanger ') + Math.abs(g(6));
+  }
+  return '';
+}
+function summary() {                              // la ligne du bas, quand un effet est en route (comme fx_summary)
+  if (!pvx) return '';
+  const g = fxGet, p = [];
+  if (g(8) === 2) p.push('arrêt (PLAY)');
+  if (g(0) !== 256) p.push(Math.floor(g(0) * 100 / 256) + ' %');
+  if (g(1)) p.push(signed(g(1)) + ' dt');
+  if (g(2)) p.push(g(2) < 0 ? 'PB' : 'PH');
+  if (g(3)) p.push('écho');
+  if (g(5)) p.push('grain');
+  if (g(6)) p.push(g(6) < 0 ? 'phaser' : 'flanger');
+  if (muteMask) p.push('voix coupées');
+  return p.join(' · ');
+}
+function needSong() { if (!pvOrig) { say('Ouvre d’abord un morceau dans le lecteur'); return false; } if (!live()) { say('PLAY : écouter d’abord'); return false; } return true; }
+function encTurn(i, e) {                         // une molette a tourné de e crans
+  if (!e) return;
+  if (i === -1) { packTurn(e); return; }          // SELECT : les morceaux du pack
+  if (i === -3) {                                 // MASTER : le volume de l'écoute
+    vol = Math.max(0, Math.min(1.5, Math.round((vol + e * 0.05) * 100) / 100));
+    if (pvGain) pvGain.gain.value = vol;
+    say('Volume ' + Math.round(vol / 0.9 * 100) + ' %'); return;
+  }
+  const fn = map.enc[i];
+  if (!fn) { say(ENC_NAMES[i] + ' : aucune fonction'); return; }
+  if (!needSong()) return;
+  pvx.pv_enc(fn, e);
+  say(encMsg(fn));
+}
+function packTurn(e) {
+  if (pack.length < 2) { say('Un seul morceau ouvert'); return; }
+  const sel = $('vgmPick'), n = pack.length;
+  sel.value = String(((+sel.value + e) % n + n) % n);
+  say('Morceau ' + (+sel.value + 1) + ' / ' + n);
+  pickFromPack();
+}
+function btnPress(i, down) {                     // un bouton enfoncé (down) ou relâché
+  if (i === -1) { if (!down) return;              // PLAY : lecture / pause (relance aussi la platine freinée)
+    if (!pvOrig) { say('Ouvre d’abord un morceau dans le lecteur'); return; }
+    if (!pvOn) { pvStart(pvF0); say('Lecture'); }
+    else if (fxGet(8) === 2 || fxGet(13)) { pvx.pv_set(13, 0); say('Lecture'); }
+    else { pvx.pv_set(13, 1); say('Pause'); }
+    fm1Refresh(); return;
+  }
+  if (i === -2) { if (down && pvOrig) { if (pvOn) pvStop(); pvF0 = 0; pvStart(0); say('Retour au début'); } return; }   // REC : le début
+  const fn = map.btn[i];
+  if (fn >= 9 && fn <= 11) {                      // SAVE, rappel, solo : puis une touche
+    if (down) { armed = armed === fn ? 0 : fn; say(armed === 9 ? 'SAVE + touche 1-12 : enregistrer' : armed === 10 ? 'Touche 1-12 : rappeler' : armed === 11 ? 'Touche : la voix seule' : ''); }
+    return;
+  }
+  if (fn === 12 || fn === 13) { if (down) packTurn(fn === 13 ? 1 : -1); return; }
+  if (!fn) { if (down) say(BTN_NAMES[i] + ' : aucune fonction'); return; }
+  if (down && !needSong()) return;
+  if (!pvx || !pvOrig) return;
+  pvx.pv_btn(fn, down ? 1 : 0);
+  if (!down) { fm1Refresh(); return; }
+  const big = !fxGet(11);
+  if (fn === 1 || fn === 2) say(encMsg(2));
+  else if (fn === 3) say(big ? 'Boucle : morceau trop gros' : 'Boucle (tenir)');
+  else if (fn === 4 || fn === 5) say(big ? 'Beat roll : morceau trop gros' : 'Beat roll ' + Math.round((fxGet(12) || 12000) / 100) + ' BPM, ' + (fn === 4 ? '1/2 temps' : '1 temps'));
+  else if (fn === 6) say(fxGet(8) ? 'Vinyl brake' : 'Platine relancée');
+  else if (fn === 7) say(big ? 'Backspin : morceau trop gros' : 'Backspin');
+  else if (fn === 8) { muteMask = 0; say('Effets remis à zéro'); }
+}
+function keyPress(k) {                           // une touche : voix coupée / remise, preset, solo
+  if (armed === 9 || armed === 10) {
+    const a = armed; armed = 0;
+    if (k >= 12) { say('Presets : les 12 premières touches'); return; }
+    const ps = presets();
+    if (a === 9) {
+      if (!pvx) { say('PLAY : écouter d’abord'); return; }
+      ps[k] = { tempo: fxGet(0), pitch: fxGet(1), filt: fxGet(2), echo: fxGet(3), time: fxGet(4), grain: fxGet(5), mod: fxGet(6), mute: muteMask };
+      try { localStorage.setItem('romsounds-presets', JSON.stringify(ps)); say('Preset enregistré : touche ' + (k + 1)); } catch (e) { say('Preset pas enregistré'); }
+    } else {
+      const q = ps[k];
+      if (!q) { say('Touche ' + (k + 1) + ' : pas de preset'); return; }
+      if (!pvx) { say('PLAY : écouter d’abord'); return; }
+      [q.tempo, q.pitch, q.filt, q.echo, q.time, q.grain, q.mod].forEach((v, j) => pvx.pv_set(j, v));
+      muteMask = q.mute; applyMute();
+      say('Preset ' + (k + 1));
+    }
+    return;
+  }
+  const nv = pvx && pvOrig ? Math.min(27, pvx.pv_voices()) : 0;
+  if (!nv) { say(pvOrig ? 'PLAY : écouter d’abord' : 'Ouvre d’abord un morceau dans le lecteur'); return; }
+  if (k >= nv) { say('Touche ' + (k + 1) + ' : pas de voix'); return; }
+  const all = (1 << nv) - 1;
+  if (armed === 11) {
+    armed = 0;
+    if ((muteMask & all) === (all & ~(1 << k))) { muteMask = 0; say('Toutes les voix'); }
+    else { muteMask = all & ~(1 << k); say('Solo, voix ' + (k + 1)); }
+  } else { muteMask ^= 1 << k; say('Voix ' + (k + 1) + (muteMask >> k & 1 ? ' coupée' : ' remise')); }
+  applyMute();
+}
 function control(kind, i, name, fixed) {
   const b = document.createElement('button');
   b.type = 'button';
-  b.className = 'ctl' + (kind === 'btn' ? ' btn' : '') + (fixed ? ' fixed' : '') + (kind === 'pot' ? ' pot' : '');
+  b.className = 'ctl' + (kind === 'btn' ? ' btn' : '') + (fixed && editing ? ' fixed' : '') + (kind === 'pot' ? ' pot' : '') + (editing ? '' : ' play');
+  b.dataset.kind = kind; b.dataset.i = i;
   const fn = fixed ? fixed : kind === 'enc' ? ENC_SHORT[map.enc[i]] : BTN_SHORT[map.btn[i]];
   b.innerHTML = '<span class="cap"></span><span></span><span class="fn"></span>';
   b.children[1].textContent = name; b.children[2].textContent = fn;
   b.setAttribute('aria-label', name + ' : ' + (fixed || (kind === 'enc' ? ENC_FN[map.enc[i]] : BTN_FN[map.btn[i]])));
-  if (pick && pick.kind === kind && pick.i === i) b.classList.add('sel');
-  if (!fixed) b.addEventListener('click', () => { pick = { kind, i }; drawFm1(); const f = $('fm1').querySelector('.screen .menu button.on'); if (f) f.focus(); });
+  if (editing) {
+    if (pick && pick.kind === kind && pick.i === i) b.classList.add('sel');
+    if (!fixed) b.addEventListener('click', () => { pick = { kind, i }; drawFm1(); const f = $('fm1').querySelector('.screen .menu button.on'); if (f) f.focus(); });
+    return b;
+  }
+  const idx = kind === 'pot' ? -3 : i;
+  if (kind === 'enc' || kind === 'pot') {         // molette : roulette, glissé vertical, clic gauche / droite, flèches
+    let y0 = null, moved = 0, acc = 0;
+    b.addEventListener('wheel', e => { e.preventDefault(); acc += e.deltaY; const n = Math.trunc(acc / 40) || (Math.abs(e.deltaY) >= 1 && Math.abs(acc) < 40 && e.deltaMode ? -Math.sign(e.deltaY) : 0); if (Math.trunc(acc / 40)) { encTurn(idx, -Math.trunc(acc / 40)); acc -= Math.trunc(acc / 40) * 40; } else if (n) { encTurn(idx, n); acc = 0; } }, { passive: false });
+    b.addEventListener('pointerdown', e => { y0 = e.clientY; moved = 0; b.setPointerCapture(e.pointerId); });
+    b.addEventListener('pointermove', e => { if (y0 === null) return; const d = Math.trunc((y0 - e.clientY) / 10); if (d) { encTurn(idx, d); y0 -= d * 10; moved += Math.abs(d); } });
+    b.addEventListener('pointerup', e => {
+      if (y0 !== null && !moved) { const r = b.getBoundingClientRect(); encTurn(idx, e.clientX < r.left + r.width / 2 ? -1 : 1); }
+      y0 = null;
+    });
+    b.addEventListener('pointercancel', () => { y0 = null; });
+    b.addEventListener('keydown', e => { const d = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[e.key]; if (d) { e.preventDefault(); encTurn(idx, d); } });
+  } else {                                        // bouton : enfoncé / relâché (tenir : boucle, beat roll)
+    let down = false;
+    const press = () => { if (down) return; down = true; b.classList.add('held'); btnPress(i, true); };
+    const release = () => { if (!down) return; down = false; b.classList.remove('held'); btnPress(i, false); };
+    b.addEventListener('pointerdown', e => { b.setPointerCapture(e.pointerId); press(); });
+    b.addEventListener('pointerup', release); b.addEventListener('pointercancel', release);
+    b.addEventListener('keydown', e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); press(); } });
+    b.addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'Enter') release(); });
+  }
   return b;
+}
+function fm1Live() {                             // ce qui bouge : touches allumées, boutons en route, la ligne du bas
+  const box = $('fm1');
+  if (!box || editing) return;
+  const nv = pvx && pvOrig ? Math.min(27, pvx.pv_voices()) : 0;
+  box.querySelectorAll('.keys [data-k]').forEach(el => {
+    const k = +el.dataset.k;
+    el.classList.toggle('on', k < nv && !(muteMask >> k & 1) && pvOn);
+    el.classList.toggle('muted', k < nv && !!(muteMask >> k & 1));
+  });
+  box.querySelectorAll('.ctl[data-kind="btn"]').forEach(el => {
+    const i = +el.dataset.i, fn = i >= 0 ? map.btn[i] : 0;
+    el.classList.toggle('armed', fn >= 9 && fn <= 11 && armed === fn);
+    el.classList.toggle('lit', !!pvx && pvOn && ((fn >= 3 && fn <= 5 && fxGet(9) && el.classList.contains('held')) || (fn === 6 && fxGet(8)) || (fn === 7 && fxGet(10)) || (i === -1 && !fxGet(13) && fxGet(8) !== 2)));
+  });
+  const sum = box.querySelector('.screen .sum');
+  if (sum) sum.textContent = summary();
+  const msg = box.querySelector('.screen .msg');
+  if (msg && fm1Msg && Date.now() - fm1MsgT > 2500) { fm1Msg = ''; msg.textContent = ''; }
+}
+function fm1Refresh() {                          // l'écran en mode jeu
+  const box = $('fm1');
+  if (!box || editing) return;
+  const ttl = box.querySelector('.screen .ttl'), msg = box.querySelector('.screen .msg'), song = box.querySelector('.screen .song');
+  if (!ttl) return;
+  const v = pvCur();
+  ttl.textContent = 'ROMSOUNDS';
+  song.textContent = v ? (v.title || 'sans titre') + (pvRed ? (pvWhich === 'red' ? ' (réduit)' : ' (original)') : '') : 'Aucun morceau : ouvre un fichier dans le lecteur.';
+  msg.textContent = fm1Msg;
+  fm1Live();
 }
 function drawFm1() {
   const box = $('fm1');
@@ -898,19 +1119,26 @@ function drawFm1() {
   const scr = document.createElement('div'); scr.className = 'screen';
   const ttl = document.createElement('div'); ttl.className = 'ttl';
   const menu = document.createElement('div'); menu.className = 'menu';
-  if (!pick) {
-    ttl.textContent = 'ROMSOUNDS';
-    menu.textContent = 'Choisis une molette ou un bouton : sa fonction s’affiche ici.';
+  if (!editing) {
+    const song = document.createElement('div'), msg = document.createElement('div'), sum = document.createElement('div');
+    song.className = 'song'; msg.className = 'msg'; sum.className = 'sum';
+    msg.setAttribute('aria-live', 'polite');
+    menu.append(song, msg); scr.append(ttl, menu, sum);
   } else {
-    const isEnc = pick.kind === 'enc', list = isEnc ? ENC_FN : BTN_FN, cur = isEnc ? map.enc[pick.i] : map.btn[pick.i];
-    ttl.textContent = isEnc ? ENC_NAMES[pick.i] : BTN_NAMES[pick.i];
-    list.forEach((t, k) => {
-      const o = document.createElement('button'); o.type = 'button'; o.textContent = t; if (k === cur) o.className = 'on';
-      o.addEventListener('click', () => { (isEnc ? map.enc : map.btn)[pick.i] = k; mapDirty = true; mapInfo('Pas encore dans le FM-1 : « Enregistrer dans le FM-1 ».'); drawFm1(); ready(); });
-      menu.append(o);
-    });
+    if (!pick) {
+      ttl.textContent = 'ROMSOUNDS';
+      menu.textContent = 'Choisis une molette ou un bouton : sa fonction s’affiche ici.';
+    } else {
+      const isEnc = pick.kind === 'enc', list = isEnc ? ENC_FN : BTN_FN, cur = isEnc ? map.enc[pick.i] : map.btn[pick.i];
+      ttl.textContent = isEnc ? ENC_NAMES[pick.i] : BTN_NAMES[pick.i];
+      list.forEach((t, k) => {
+        const o = document.createElement('button'); o.type = 'button'; o.textContent = t; if (k === cur) o.className = 'on';
+        o.addEventListener('click', () => { (isEnc ? map.enc : map.btn)[pick.i] = k; mapDirty = true; mapInfo('Pas encore dans le FM-1 : « Enregistrer dans le FM-1 ».'); drawFm1(); ready(); });
+        menu.append(o);
+      });
+    }
+    scr.append(ttl, menu);
   }
-  scr.append(ttl, menu);
   const right = document.createElement('div'); right.className = 'right';
   const knobs = document.createElement('div'); knobs.className = 'knobs';
   for (let i = 0; i < 4; i++) knobs.append(control('enc', i, ENC_NAMES[i]));
@@ -922,22 +1150,38 @@ function drawFm1() {
   up.append(left, scr, right);
   const keys = document.createElement('div'); keys.className = 'keys';
   const white = [];
+  const key = (k, cls) => {
+    const el = document.createElement('div'); el.className = cls; el.textContent = String(k + 1); el.dataset.k = k;
+    if (!editing) { el.setAttribute('role', 'button'); el.tabIndex = 0; el.setAttribute('aria-label', 'Touche ' + (k + 1));
+      el.addEventListener('click', () => keyPress(k)); el.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); keyPress(k); } }); }
+    return el;
+  };
   for (let k = 0; k < 27; k++) {                          // F3 .. G5 : 27 touches, dont 16 blanches
     const n = (k + 5) % 12, isBlack = [1, 3, 6, 8, 10].includes(n);
-    if (!isBlack) { const w = document.createElement('div'); w.className = 'w'; w.textContent = String(k + 1); keys.append(w); white.push(k); }
+    if (!isBlack) { keys.append(key(k, 'w')); white.push(k); }
   }
   const nW = white.length;
   for (let k = 0, w = 0; k < 27; k++) {
     const n = (k + 5) % 12, isBlack = [1, 3, 6, 8, 10].includes(n);
     if (!isBlack) { w++; continue; }
-    const b = document.createElement('div'); b.className = 'b'; b.textContent = String(k + 1);
+    const b = key(k, 'b');
     b.style.left = 'calc(' + (w / nW * 100) + '% - ' + (0.32 / nW * 100) + '%)'; b.style.width = (0.64 / nW * 100) + '%';
     keys.append(b);
   }
   box.append(up, keys);
   const on = menu.querySelector('.on');
   if (on) menu.scrollTop = Math.max(0, on.offsetTop - menu.offsetTop - menu.clientHeight / 3);
+  fm1Refresh();
 }
+$('mapEdit').addEventListener('click', () => {
+  editing = !editing; pick = null; armed = 0;
+  $('mapEdit').setAttribute('aria-pressed', String(editing));
+  $('mapEdit').textContent = editing ? 'Terminer la modification' : 'Modifier l’affectation';
+  $('mapSend').hidden = $('mapReset').hidden = !editing;
+  $('deckHelpPlay').hidden = editing; $('deckHelpEdit').hidden = !editing;
+  if (!editing) mapInfo(mapDirty ? 'Pas encore dans le FM-1 : « Modifier l’affectation », puis « Enregistrer dans le FM-1 ».' : '');
+  drawFm1();
+});
 $('mapReset').addEventListener('click', () => { pick = null; setMap(MAP_DEF, true); mapInfo('Réglages d’origine : « Enregistrer dans le FM-1 » pour les y mettre.'); });
 $('mapSend').addEventListener('click', async () => {
   if (busy) return;

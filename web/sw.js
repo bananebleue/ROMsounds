@@ -1,6 +1,6 @@
 /* Service worker : la page s'ouvre aussi sans réseau.
    Réseau d'abord (toujours la dernière version), copie gardée pour le hors-ligne. */
-const CACHE = 'romsounds-v2';
+const CACHE = 'romsounds-v3';
 const SHELL = ['./', 'index.html', 'romsounds.js', 'fm1ota.js', 'preview.wasm', 'sndh.wasm', 'manifest.webmanifest', 'icon-192.png'];
 
 self.addEventListener('install', e => {

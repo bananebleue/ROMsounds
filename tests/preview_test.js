@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // ROMsounds : le lecteur de prévisualisation de la page (web/preview.wasm, fm1/preview/preview.c) dans Node : un
 // morceau préparé (RSM) rendu en WAV, à comparer au lecteur du firmware sur PC (tests/run_host.sh) ou à libvgm.
-//   node tests/preview_test.js MORCEAU.rsm SECONDES SORTIE.wav
+//   node tests/preview_test.js MORCEAU.rsm SECONDES SORTIE.wav [ACTIONS]
+//   ACTIONS : les molettes et boutons de l'image du FM-1, « s:enc:fn:crans » ou « s:btn:fn:appui » séparés par des virgules
+//   (s : l'instant en secondes ; fn : FN_* / FB_* de romsounds.c), par exemple 0:enc:2:12 (hauteur +12) ou 0.5:btn:6:1 (brake)
 'use strict';
 const fs = require('fs'), path = require('path');
 (async () => {
-  const [rsm, sec, outPath] = process.argv.slice(2);
+  const [rsm, sec, outPath, acts] = process.argv.slice(2);
+  const todo = (acts || '').split(',').filter(Boolean).map(a => a.split(':')).map(([t, k, fn, v]) => ({ at: Math.round(+t * 44100), k, fn: +fn, v: +v }));
   const { instance } = await WebAssembly.instantiate(fs.readFileSync(path.join(__dirname, '../web/preview.wasm')), {});
   const x = instance.exports, mem = () => new Uint8Array(x.memory.buffer);
   const blob = fs.readFileSync(rsm);
@@ -15,7 +18,8 @@ const fs = require('fs'), path = require('path');
   const want = Math.round(+sec * 44100), pcm = Buffer.alloc(want * 4);
   let got = 0;
   while (got < want) {
-    const n = x.pv_render(Math.min(4096, want - got));
+    while (todo.length && todo[0].at <= got) { const a = todo.shift(); if (a.k === 'enc') x.pv_enc(a.fn, a.v); else x.pv_btn(a.fn, a.v); }
+    const n = x.pv_render(Math.min(todo.length ? Math.max(256, todo[0].at - got) : 4096, 4096, want - got));
     if (!n) break;
     Buffer.from(x.memory.buffer, x.pv_out(), n * 4).copy(pcm, got * 4);
     got += n;

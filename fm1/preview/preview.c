@@ -1,12 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* ROMsounds : le lecteur du FM-1, pour la page (WebAssembly). Mêmes puces, même lecture des commandes, mêmes niveaux
- * que firmware/src/romsounds.c (render_block, sans les effets) : ce qu'on écoute dans la page est ce que jouera le FM-1.
+/* ROMsounds : le lecteur du FM-1, pour la page (WebAssembly). Mêmes puces, même lecture des commandes, mêmes niveaux et
+ * mêmes effets que firmware/src/romsounds.c (render_block, fx_enc, fx_controls) : ce qu'on écoute dans la page est ce
+ * que jouera le FM-1, molettes et boutons de l'image compris. La page peut aussi y jouer un morceau trop gros pour le
+ * FM-1 (jusqu'à PV_MAX), pour l'écouter avant de le réduire.
  *
  *   pv_buf()           l'endroit où la page copie le morceau préparé (RSM1 à RSM7, RSMD : web/romsounds.js)
  *   pv_load(taille)    0, ou un code d'erreur (comme song_load)
  *   pv_render(n)       calcule n trames (n <= PV_BLOCK) dans pv_out() (int16 stéréo, 44,1 kHz) ; rend le nombre de
  *                      trames calculées (moins que n : fin du morceau)
  *   pv_played()        trames jouées (le temps du morceau, la boucle continue après la fin)
+ *   pv_enc(fn, crans)  une molette (FN_* de romsounds.c : 1 tempo, 2 hauteur, 3 filtre, 4 écho, 5 temps, 6 grain, 7 modulation)
+ *   pv_btn(fn, appui)  un bouton (FB_* : 1-2 hauteur, 3 boucle, 4-5 beat roll, 6 vinyl brake, 7 backspin, 8 remise à zéro) ;
+ *                      appui 1 : enfoncé, 0 : relâché
+ *   pv_get(i), pv_set(i, v)   l'état des effets (PV_* plus bas : pour l'écran et les presets de la page)
+ *   pv_voices()        le nombre de voix (les touches)
  *   pv_mute(masque)    voix coupées (même ordre que sur le FM-1 : FM 1-6, DAC, PSG 1-3, bruit ; Game Boy ; NES ; YM2610 : FM, ADPCM-A, ADPCM-B ; YM2151 ; YM2203 ; OKI ; OPL ; AY / SSG)
  *
  *   tools/build_preview.sh  ->  web/preview.wasm  (clang --target=wasm32, sans bibliothèque C) */
@@ -23,11 +30,13 @@
 #include "oki.h"
 #include "k053260.h"
 #include "mod.h"
+#include "fx.h"
 #include "vgm.h"
 #include "../firmware/ext/uzlib/uzlib.h"
 
 #define EXPORT(n) __attribute__((export_name(n)))
-#define VGM_MAX (268u * 1024u)
+#define VGM_MAX (268u * 1024u)                  /* la place dans le FM-1 (au-dessus de VGM_MAX - FX_BYTES : sans écho, comme lui) */
+#define PV_MAX (16u * 1024u * 1024u)            /* ce que la page peut écouter */
 #define PV_BLOCK 4096u
 
 /* ce qu'il faut de la bibliothèque C (fmopn.c, tinflate.c) */
@@ -43,7 +52,8 @@ int memcmp(const void *a, const void *b, size_t n) { const uint8_t *p = a, *q = 
 uint32_t uzlib_adler32(const void *data, unsigned int length, uint32_t prev_sum) { (void)data; (void)length; return prev_sum; }
 uint32_t uzlib_crc32(const void *data, unsigned int length, uint32_t crc) { (void)data; (void)length; return crc; }
 
-static uint8_t vgm_buf[VGM_MAX];
+static uint8_t vgm_buf[PV_MAX];
+static int16_t fx_mem[FX_FRAMES * 2u];
 static uint8_t dict[32768];
 static int16_t out[PV_BLOCK * 2u];
 static const uint8_t *part_a, *part_b;
@@ -52,7 +62,15 @@ static TINF_DATA inf;
 static uint8_t obuf[256];
 static uint32_t obuf_r, obuf_n, inf_done, part_waited;
 static vgm_t song;
-static uint32_t wait, played, ended, loaded;
+static uint32_t played, ended, loaded, song_size, played_frac;
+static int32_t wait_q8;
+static fx_t fx;
+static uint32_t tempo_cur = 256, speed_q16 = 65536u, brake, braked, paused;
+static int32_t pitch;
+static uint32_t ym_step0, psg_step0, gb_step0, nes_step0, ay_step0, oki_step0, kdsc_step0;
+static const uint32_t SEMI_Q16[25] = {32768, 34716, 36781, 38968, 41285, 43740, 46341, 49097, 52016, 55109, 58386, 61858,
+    65536, 69433, 73562, 77936, 82570, 87480, 92682, 98193, 104032, 110218, 116772, 123715, 131072};
+static uint32_t mul_q16(uint32_t a, uint32_t r) { return (a >> 16) * r + ((a & 0xFFFFu) * (r >> 2) >> 14); }
 static void *ym;
 static psg_t psg;
 static gb_t gb;
@@ -166,21 +184,133 @@ static void apply_mute(void)
 }
 EXPORT("pv_mute") void pv_mute(uint32_t m) { mute = m; if (loaded) apply_mute(); }
 
+/* ---- effets : comme romsounds.c (fx_apply_rate, fx_enc, fx_controls) */
+static uint32_t voices(void)
+{
+    uint32_t n = 0;
+    if (song.is_mod) return mod.nch;
+    if (song.ym_clock) n += 7u;
+    else if (song.opnb_clock) n += (song.opnb_type & 1u ? 6u : 4u) + 7u;
+    else if (song.opm_clock) n += 8u;
+    else if (song.opn_clock) n += 3u;
+    if (song.psg_clock) n += 4u;
+    if (song.gb_clock) n += 4u;
+    if (song.nes_clock) n += 5u;
+    if (song.oki_clock || song.kdsc_clock) n += 4u;
+    if (song.opl_clock) n += 10u;
+    if (song.ay_clock) n += 4u;
+    return n;
+}
+#define PITCH_MAX (song.ym_clock || song.opnb_clock || song.opn_clock ? 5 : song.opm_clock ? 3 : song.opl_clock ? 1 : 12)
+static void fx_apply_rate(void)
+{
+    uint32_t r = mul_q16(SEMI_Q16[pitch + 12], speed_q16 > 65536u ? 65536u : speed_q16);
+    ym_step = mul_q16(ym_step0, r);
+    psg.step_q16 = mul_q16(psg_step0, r);
+    gb.step_q16 = mul_q16(gb_step0, r);
+    nes.step_q16 = mul_q16(nes_step0, r);
+    ay.step_q16 = mul_q16(ay_step0, r);
+    oki.step_q16 = mul_q16(oki_step0, r);
+    kdsc.step_q16 = mul_q16(kdsc_step0, r);
+    mod.rate_q16 = r;
+}
+static void start_common(void)                  /* (pv_load) : comme la fin de song_start */
+{
+    wait_q8 = 0; played = 0; played_frac = 0; ended = 0; loaded = 1;
+    brake = 0; braked = 0; speed_q16 = 65536u; paused = 0;
+    if (pitch > PITCH_MAX) pitch = PITCH_MAX;
+    fx_apply_rate();
+    apply_mute();
+    fx_attach(&fx, song_size <= VGM_MAX - FX_BYTES ? fx_mem : 0);   /* (le FM-1 : la mémoire de l'écho au-dessus du morceau) */
+}
+static uint32_t beat_frames(void) { return 264600000u / (song.bpm100 ? song.bpm100 : 12000u); }
+static uint32_t tempo_eff(void) { uint32_t t = tempo_cur * (speed_q16 >> 8) >> 8; return t ? t : 1u; }
+
+EXPORT("pv_voices") uint32_t pv_voices(void) { return loaded ? voices() : 0u; }
+EXPORT("pv_enc") void pv_enc(uint32_t fn, int32_t e)
+{
+    int32_t v;
+    switch (fn) {
+    case 1: v = (int32_t)tempo_cur + 13 * e; tempo_cur = (uint32_t)(v < 64 ? 64 : v > 512 ? 512 : v); break;
+    case 2: v = pitch + e; pitch = v < -12 ? -12 : v > PITCH_MAX ? PITCH_MAX : v; fx_apply_rate(); break;
+    case 3:
+        v = fx.filt + e; v = v < -20 ? -20 : v > 20 ? 20 : v;
+        if (!fx.filt || (fx.filt < 0) != (v < 0)) { fx.lo[0] = fx.lo[1] = fx.bd[0] = fx.bd[1] = 0; }
+        fx.filt = (int8_t)v; break;
+    case 4: v = fx.echo + e; fx.echo = (uint8_t)(v < 0 ? 0 : v > 10 ? 10 : v); break;
+    case 5: v = fx.time + e; fx.time = (uint8_t)(v < 1 ? 1 : v > 11 ? 11 : v); break;
+    case 6: v = fx.grain + e; fx.grain = (uint8_t)(v < 0 ? 0 : v > 12 ? 12 : v); break;
+    case 7: v = fx.mod + e; fx.mod = (int8_t)(v < -10 ? -10 : v > 10 ? 10 : v); break;
+    default: break;
+    }
+}
+EXPORT("pv_btn") void pv_btn(uint32_t fn, uint32_t down)
+{
+    switch (fn) {
+    case 1: case 2: if (down) pv_enc(2, fn == 2u ? 1 : -1); break;
+    case 3: if (down && loaded) fx_loop(&fx, fx_len(&fx), 0, 0); if (!down) fx.loop = 0; break;
+    case 4: case 5:
+        if (down && loaded) {
+            uint32_t L = beat_frames() >> (fn == 4u ? 1 : 0), ph = song.beat0 % L, t = played, back, te = tempo_eff();
+            back = t >= ph ? (t - ph) % L : 0u;
+            fx_loop(&fx, L * 256u / te, back * 256u / te, 1);
+        }
+        if (!down) fx.loop = 0;
+        break;
+    case 6:
+        if (down && loaded) {
+            if (braked) { braked = 0; brake = 0; speed_q16 = 65536u; fx_apply_rate(); }
+            else if (!paused) brake = 1;
+        }
+        break;
+    case 7: if (down && loaded) fx_backspin(&fx); break;
+    case 8: if (down) { tempo_cur = 256; pitch = 0; mute = 0; fx_reset(&fx); braked = 0; brake = 0; speed_q16 = 65536u; fx_apply_rate(); if (loaded) apply_mute(); } break;
+    default: break;
+    }
+}
+/* l'état : 0 tempo (Q8), 1 hauteur, 2 filtre, 3 écho, 4 temps, 5 grain, 6 modulation, 7 voix coupées, 8 freinage (1 : ralentit,
+ * 2 : arrêtée), 9 boucle en cours, 10 backspin en cours, 11 écho / boucle possibles (morceau assez petit), 12 BPM x 100, 13 pause */
+EXPORT("pv_get") int32_t pv_get(uint32_t i)
+{
+    switch (i) {
+    case 0: return (int32_t)tempo_cur; case 1: return pitch; case 2: return fx.filt; case 3: return fx.echo; case 4: return fx.time;
+    case 5: return fx.grain; case 6: return fx.mod; case 7: return (int32_t)mute; case 8: return braked ? 2 : brake ? 1 : 0;
+    case 9: return fx.loop; case 10: return fx.spin != 0u; case 11: return fx.buf != 0; case 12: return (int32_t)song.bpm100;
+    case 13: return (int32_t)paused; default: return 0;
+    }
+}
+EXPORT("pv_set") void pv_set(uint32_t i, int32_t v)
+{
+    switch (i) {
+    case 0: tempo_cur = (uint32_t)(v < 64 ? 64 : v > 512 ? 512 : v); break;
+    case 1: pitch = v < -12 ? -12 : v > PITCH_MAX ? PITCH_MAX : v; fx_apply_rate(); break;
+    case 2: if ((fx.filt < 0) != (v < 0) || !fx.filt) { fx.lo[0] = fx.lo[1] = fx.bd[0] = fx.bd[1] = 0; } fx.filt = (int8_t)(v < -20 ? -20 : v > 20 ? 20 : v); break;
+    case 3: fx.echo = (uint8_t)(v < 0 ? 0 : v > 10 ? 10 : v); break;
+    case 4: fx.time = (uint8_t)(v < 1 ? 1 : v > 11 ? 11 : v); break;
+    case 5: fx.grain = (uint8_t)(v < 0 ? 0 : v > 12 ? 12 : v); break;
+    case 6: fx.mod = (int8_t)(v < -10 ? -10 : v > 10 ? 10 : v); break;
+    case 7: mute = (uint32_t)v; if (loaded) apply_mute(); break;
+    case 13: paused = v != 0; if (!paused && braked) { braked = 0; brake = 0; speed_q16 = 65536u; fx_apply_rate(); } break;   /* (PLAY relance aussi la platine) */
+    default: break;
+    }
+}
+
 EXPORT("pv_load") int pv_load(uint32_t size)
 {
     const uint8_t *m = vgm_buf;
     uint32_t pcm, a, b, hl, yc, rate;
     loaded = 0;
     song.is_mod = 0;
-    if (size >= 64u && size <= VGM_MAX && m[0] == 'R' && m[1] == 'S' && m[2] == 'M' && m[3] == 'D') {   /* module Amiga */
+    if (size >= 64u && size <= PV_MAX && m[0] == 'R' && m[1] == 'S' && m[2] == 'M' && m[3] == 'D') {   /* module Amiga */
         if ((rd32(m + 4) != 1u && rd32(m + 4) != 2u) || rd32(m + 8) + 64u != size
             || mod_load(&mod, m + 64, size - 64u, rd32(m + 4) == 2u ? rd32(m + 56) : 0u, rd32(m + 4) == 2u ? rd32(m + 60) : 0u)) return 4;
         song.is_mod = 1; song.total = rd32(m + 12); song.loop_samples = rd32(m + 16);
-        played = 0; ended = 0; loaded = 1;
-        apply_mute();
+        song.bpm100 = rd32(m + 48); song.beat0 = rd32(m + 52);
+        song_size = size;
+        start_common();
         return 0;
     }
-    if (size < 40u || size > VGM_MAX || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] < '1' || m[3] > '7')) return 4;
+    if (size < 40u || size > PV_MAX || m[0] != 'R' || m[1] != 'S' || m[2] != 'M' || (m[3] < '1' || m[3] > '7')) return 4;
     hl = m[3] == '1' ? 40u : m[3] == '2' ? 48u : m[3] == '3' ? 56u : m[3] == '4' ? 64u : m[3] == '5' ? 72u : m[3] == '6' ? 88u : 104u;
     if (size < hl) return 4;
     pcm = rd32(m + 20); a = rd32(m + 24); b = rd32(m + 28);
@@ -203,6 +333,10 @@ EXPORT("pv_load") int pv_load(uint32_t size)
     song.oki_clock = hl > 88u ? rd32(m + 96) : 0u;
     song.kdsc_clock = hl > 88u && !song.oki_clock ? rd32(m + 100) : 0u;
     song.kdsc_sh = song.kdsc_clock ? rd32(m + 84) : 0u;   /* (échantillons réduits par la page : 1 point sur 2^sh) */
+    song.bpm100 = hl > 48u ? rd32(m + 48) : 0u;
+    song.beat0 = hl > 48u ? rd32(m + 52) : 0u;
+    if (song.bpm100 && (song.bpm100 < 3000u || song.bpm100 > 40000u)) song.bpm100 = 0;
+    song_size = size;
     if (song.opnb_clock && !song.ay_clock) { song.ay_clock = song.opnb_clock / 4u; song.ay_type = 0x10u; }
     if (song.opn_clock && !song.ay_clock) { song.ay_clock = song.opn_clock / 2u; song.ay_type = 0x10u; }
     song.pcm = m + hl; song.pcm_len = pcm;
@@ -247,29 +381,47 @@ EXPORT("pv_load") int pv_load(uint32_t size)
     gb_init(&gb, song.gb_clock);
     nes_init(&nes, song.nes_clock, !song.ym_clock && song.pcm_len >= 0x8000u ? song.pcm : 0);
     ay_init(&ay, song.ay_clock, (song.ay_type & 0xF0u) != 0u);
-    ym_step = (rate << 16) / 44100u;
+    ym_step0 = (rate << 16) / 44100u;
     ym_pos = 0; mbuf_n = 0; mbuf_l[0] = mbuf_r[0] = 0;
     song.pcm_pos = 0;
     part_open(0);
-    wait = 0; played = 0; ended = 0; loaded = 1;
-    apply_mute();
+    psg_step0 = psg.step_q16; gb_step0 = gb.step_q16; nes_step0 = nes.step_q16; ay_step0 = ay.step_q16;
+    oki_step0 = oki.step_q16; kdsc_step0 = kdsc.step_q16;
+    start_common();
     return 0;
 }
 
-/* comme render_block (firmware/src/romsounds.c), tempo 100 %, hauteur 0, sans effets */
-EXPORT("pv_render") uint32_t pv_render(uint32_t frames)
+/* comme render_block (firmware/src/romsounds.c) : 256 trames à la fois, tempo, hauteur, vinyl brake, effets */
+#define BLOCK 256u
+static void render_block(int32_t *mix)
 {
-    static int32_t mix[PV_BLOCK * 2u], tmp[PV_BLOCK * 2u];
-    uint32_t left = frames > PV_BLOCK ? PV_BLOCK : frames, o = 0, i, done;
-    for (i = 0; i < 2u * left; i++) mix[i] = 0;
-    if (song.is_mod && loaded) { mod_render(&mod, mix, left); played += left; o = left; left = 0; }
-    while (left && loaded && !ended) {
+    static int32_t tmp[BLOCK * 2u];
+    uint32_t left = BLOCK, o = 0, i, tempo = tempo_cur * (speed_q16 >> 8) >> 8, playing = loaded && !ended && !paused && !braked;
+    if (!tempo) tempo = 1;
+    for (i = 0; i < BLOCK * 2u; i++) mix[i] = 0;
+    if (brake && playing) {
+        speed_q16 = speed_q16 > 317u + 1500u ? speed_q16 - 317u : 0u;
+        if (!speed_q16) { playing = 0; brake = 0; braked = 1; speed_q16 = 1500u; }
+        fx_apply_rate();
+    }
+    if (song.is_mod && playing) {
+        mod.tempo_q8 = tempo;
+        mod_render(&mod, mix, BLOCK);
+        played_frac += BLOCK * tempo; played += played_frac >> 8; played_frac &= 255u;
+        left = 0;
+    }
+    while (left && playing) {
         uint32_t n, k = 0, j, p = ym_pos, kk = 0;
         DEV_SMPL *bb[2] = {mbuf_l + 1, mbuf_r + 1};
-        if (!wait && !(wait = vgm_next(&song))) { ended = 1; break; }
+        if (wait_q8 <= 0) {
+            uint32_t wt = vgm_next(&song);
+            if (!wt) { playing = 0; ended = 1; break; }
+            wait_q8 += (int32_t)(wt << 8);
+            continue;
+        }
         part_waited = 1;
-        n = wait < left ? wait : left;
-        if (n > 256u) n = 256u;                 /* (mbuf : 256 trames au plus d'un coup, comme sur le FM-1) */
+        n = ((uint32_t)wait_q8 + tempo - 1u) / tempo;
+        if (n > left) n = left;
         for (j = 0; j < n; j++) { p += ym_step; k += p >> 16; p &= 0xFFFFu; }
         if (song.ym_clock || opl || opnb || opm || opn) {
             int32_t g = song.ym_clock ? 2 : opnb ? OPNB_GAIN : opm ? OPM_GAIN : opn ? OPN_GAIN : OPL_GAIN;
@@ -302,9 +454,21 @@ EXPORT("pv_render") uint32_t pv_render(uint32_t frames)
         if (song.ay_clock) ay_render(&ay, mix + 2u * o, n);
         if (song.oki_clock) oki_render(&oki, mix + 2u * o, n);
         if (song.kdsc_clock) kdsc_render(&kdsc, mix + 2u * o, n);
-        wait -= n; left -= n; o += n; played += n;
+        wait_q8 -= (int32_t)(n * tempo);
+        played_frac += n * tempo; played += played_frac >> 8; played_frac &= 255u;
+        left -= n; o += n;
     }
-    done = o;
-    for (i = 0; i < 2u * done; i++) { int32_t v = mix[i]; out[i] = (int16_t)(v > 32767 ? 32767 : v < -32767 ? -32767 : v); }
-    return done;
+    if (loaded) fx_process(&fx, mix, BLOCK);
+}
+/* n trames (multiple de 256, n <= PV_BLOCK) dans pv_out() ; rend n, ou 0 quand le morceau est fini (sans écho qui traîne) */
+EXPORT("pv_render") uint32_t pv_render(uint32_t frames)
+{
+    static int32_t mix[BLOCK * 2u];
+    uint32_t n = frames > PV_BLOCK ? PV_BLOCK : frames, o, i;
+    if (!loaded || ended) return 0;
+    for (o = 0; o + BLOCK <= n; o += BLOCK) {
+        render_block(mix);
+        for (i = 0; i < BLOCK * 2u; i++) { int32_t v = mix[i]; out[2u * o + i] = (int16_t)(v > 32767 ? 32767 : v < -32767 ? -32767 : v); }
+    }
+    return o;
 }

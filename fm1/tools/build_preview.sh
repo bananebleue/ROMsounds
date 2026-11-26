@@ -14,5 +14,5 @@ clang $F $I -c firmware/ext/fmopn/ymdeltat.c -o build/preview/ymdeltat.o
 clang $F $I -c firmware/ext/fmopl/fmopl.c -o build/preview/fmopl.o
 clang $F $I -c firmware/ext/ym2151/ym2151.c -o build/preview/ym2151.o
 clang $F $I -c firmware/ext/uzlib/tinflate.c -o build/preview/tinflate.o
-wasm-ld --no-entry --strip-all --initial-memory=4194304 -o "$OUT" build/preview/preview.o build/preview/fmopn.o build/preview/ymdeltat.o build/preview/fmopl.o build/preview/ym2151.o build/preview/tinflate.o
+wasm-ld --no-entry --strip-all --initial-memory=33554432 -o "$OUT" build/preview/preview.o build/preview/fmopn.o build/preview/ymdeltat.o build/preview/fmopl.o build/preview/ym2151.o build/preview/tinflate.o
 echo "preview -> $OUT ($(wc -c < "$OUT") octets)"
